@@ -20,6 +20,7 @@
 #include <cassert>
 #include <cstdlib>
 #include <memory>
+#include <signal.h>
 #include <vector>
 
 #include "rclcpp/executor.hpp"
@@ -30,11 +31,19 @@
 #include "rclcpp/rate.hpp"
 #include "rclcpp/visibility_control.hpp"
 
+#include "rclcpp/cond.hpp"
+#include "rclcpp/stack.hpp"
+
 namespace rclcpp
 {
 namespace executors
 {
 
+struct ThreadData {
+  syncutil::Condition is_busy;
+  AnyExecutable any_exec;
+  pthread_t pid;
+};
 /// Single-threaded executor implementation.
 /**
  * This is the default executor created by rclcpp::spin.
@@ -64,9 +73,24 @@ public:
   RCLCPP_PUBLIC
   void
   spin() override;
-
+  void execute_executable(AnyExecutable any_exec) {
+    execute_any_executable(any_exec);
+  }
+  syncutil::StackAtomic<ThreadData> idle_threads;
 private:
   RCLCPP_DISABLE_COPY(SingleThreadedExecutor)
+  syncutil::Condition signal_scheduler;
+  void schedule();
+  void create_thread();
+  void create_thread(AnyExecutable any_exec);
+  void assign_or_create(AnyExecutable any_exec);
+
+};
+
+struct PthreadArg {
+    SingleThreadedExecutor* executor;
+    rclcpp::AnyExecutable any_exec;
+    PthreadArg(SingleThreadedExecutor* executor, rclcpp::AnyExecutable any_exec): executor(executor), any_exec(any_exec) {}
 };
 
 }  // namespace executors
