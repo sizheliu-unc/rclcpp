@@ -17,8 +17,11 @@
 #include <pthread.h>
 #include <stdio.h>
 
+#include "rclcpp/callback_group.hpp"
 #include "rclcpp/executors/single_threaded_executor.hpp"
 #include "rclcpp/any_executable.hpp"
+
+#include "tracetools/tracetools.h"
 
 #define UNUSED(expr) do { (void)(expr); } while (0)
 
@@ -51,6 +54,133 @@ void* thread_start(void* pthread_arg) {
     executor->idle_threads.push(&thread_data);
   }
 }
+
+void SingleThreadedExecutor::execute_executable(AnyExecutable any_exec) {
+  if (any_exec.callback_group->type() == CallbackGroupType::MutuallyExclusive) {
+    any_exec.callback_group->callback_group_mutex.lock();
+    execute_any_executable(any_exec);
+    any_exec.callback_group->callback_group_mutex.unlock();
+    return;
+  }
+  execute_any_executable(any_exec);
+
+
+}
+
+bool
+SingleThreadedExecutor::get_next_ready_executable(AnyExecutable & any_executable)
+{
+  TRACETOOLS_TRACEPOINT(rclcpp_executor_get_next_ready);
+
+  bool valid_executable = false;
+
+  if (!wait_result_.has_value() || wait_result_->kind() != rclcpp::WaitResultKind::Ready) {
+    return false;
+  }
+
+  if (!valid_executable) {
+    size_t current_timer_index = 0;
+    while (true) {
+      auto [timer, timer_index] = wait_result_->peek_next_ready_timer(current_timer_index);
+      if (nullptr == timer) {
+        break;
+      }
+      current_timer_index = timer_index;
+      auto entity_iter = current_collection_.timers.find(timer->get_timer_handle().get());
+      if (entity_iter != current_collection_.timers.end()) {
+        auto callback_group = entity_iter->second.callback_group.lock();
+        if (!callback_group || !callback_group->can_be_taken_from()) {
+          current_timer_index++;
+          continue;
+        }
+        // At this point the timer is either ready for execution or was perhaps
+        // it was canceled, based on the result of call(), but either way it
+        // should not be checked again from peek_next_ready_timer(), so clear
+        // it from the wait result.
+        wait_result_->clear_timer_with_index(current_timer_index);
+        // Check that the timer should be called still, i.e. it wasn't canceled.
+        any_executable.data = timer->call();
+        if (!any_executable.data) {
+          current_timer_index++;
+          continue;
+        }
+        any_executable.timer = timer;
+        any_executable.callback_group = callback_group;
+        valid_executable = true;
+        break;
+      }
+      current_timer_index++;
+    }
+  }
+
+  if (!valid_executable) {
+    while (auto subscription = wait_result_->next_ready_subscription()) {
+      auto entity_iter = current_collection_.subscriptions.find(
+        subscription->get_subscription_handle().get());
+      if (entity_iter != current_collection_.subscriptions.end()) {
+        auto callback_group = entity_iter->second.callback_group.lock();
+        if (!callback_group || !callback_group->can_be_taken_from()) {
+          continue;
+        }
+        any_executable.subscription = subscription;
+        any_executable.callback_group = callback_group;
+        valid_executable = true;
+        break;
+      }
+    }
+  }
+
+  if (!valid_executable) {
+    while (auto service = wait_result_->next_ready_service()) {
+      auto entity_iter = current_collection_.services.find(service->get_service_handle().get());
+      if (entity_iter != current_collection_.services.end()) {
+        auto callback_group = entity_iter->second.callback_group.lock();
+        if (!callback_group || !callback_group->can_be_taken_from()) {
+          continue;
+        }
+        any_executable.service = service;
+        any_executable.callback_group = callback_group;
+        valid_executable = true;
+        break;
+      }
+    }
+  }
+
+  if (!valid_executable) {
+    while (auto client = wait_result_->next_ready_client()) {
+      auto entity_iter = current_collection_.clients.find(client->get_client_handle().get());
+      if (entity_iter != current_collection_.clients.end()) {
+        auto callback_group = entity_iter->second.callback_group.lock();
+        if (!callback_group || !callback_group->can_be_taken_from()) {
+          continue;
+        }
+        any_executable.client = client;
+        any_executable.callback_group = callback_group;
+        valid_executable = true;
+        break;
+      }
+    }
+  }
+
+  if (!valid_executable) {
+    while (auto waitable = wait_result_->next_ready_waitable()) {
+      auto entity_iter = current_collection_.waitables.find(waitable.get());
+      if (entity_iter != current_collection_.waitables.end()) {
+        auto callback_group = entity_iter->second.callback_group.lock();
+        if (!callback_group || !callback_group->can_be_taken_from()) {
+          continue;
+        }
+        any_executable.waitable = waitable;
+        any_executable.callback_group = callback_group;
+        any_executable.data = waitable->take_data();
+        valid_executable = true;
+        break;
+      }
+    }
+  }
+  return valid_executable;
+}
+
 
 inline void SingleThreadedExecutor::create_thread(rclcpp::AnyExecutable any_exec) {
     PthreadArg* pthread_arg= new PthreadArg(this, any_exec);

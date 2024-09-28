@@ -503,7 +503,7 @@ protected:
     bool notify = true) RCPPUTILS_TSA_REQUIRES(mutex_);
 
   RCLCPP_PUBLIC
-  bool
+  virtual bool
   get_next_ready_executable(AnyExecutable & any_executable);
 
   RCLCPP_PUBLIC

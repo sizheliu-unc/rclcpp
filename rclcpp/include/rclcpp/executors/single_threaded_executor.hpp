@@ -73,10 +73,10 @@ public:
   RCLCPP_PUBLIC
   void
   spin() override;
-  void execute_executable(AnyExecutable any_exec) {
-    execute_any_executable(any_exec);
-  }
+  void execute_executable(AnyExecutable any_exec);
   syncutil::StackAtomic<ThreadData> idle_threads;
+  RCLCPP_PUBLIC
+  bool get_next_ready_executable(AnyExecutable & any_executable) override;
 private:
   RCLCPP_DISABLE_COPY(SingleThreadedExecutor)
   syncutil::Condition signal_scheduler;
