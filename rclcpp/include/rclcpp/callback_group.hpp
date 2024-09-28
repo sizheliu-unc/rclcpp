@@ -35,6 +35,10 @@ namespace rclcpp
 {
 
 // Forward declarations for friend statement in class CallbackGroup
+namespace executors
+{
+  class SingleThreadedExecutor;
+}   // namespace executors
 namespace node_interfaces
 {
 class NodeServices;
@@ -51,6 +55,7 @@ enum class CallbackGroupType
 
 class CallbackGroup
 {
+  friend class rclcpp::executors::SingleThreadedExecutor;
   friend class rclcpp::node_interfaces::NodeServices;
   friend class rclcpp::node_interfaces::NodeTimers;
   friend class rclcpp::node_interfaces::NodeTopics;
@@ -297,6 +302,7 @@ protected:
   CallbackGroupType type_;
   // Mutex to protect the subsequent vectors of pointers.
   mutable std::mutex mutex_;
+  std::mutex callback_group_mutex;
   std::atomic_bool associated_with_executor_;
   std::vector<rclcpp::SubscriptionBase::WeakPtr> subscription_ptrs_;
   std::vector<rclcpp::TimerBase::WeakPtr> timer_ptrs_;
