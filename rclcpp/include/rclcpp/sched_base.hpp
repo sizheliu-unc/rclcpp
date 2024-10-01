@@ -7,6 +7,11 @@
 #include <pthread.h>
 #include <atomic>
 
+#if defined(__x86_64__) || defined(_M_X64)
+    #define PADDING_SIZE 90 
+#else
+    #define PADDING_SIZE 26 // Speculative, not tested
+#endif
 
 namespace rclcpp {
 // forward declarations
@@ -16,7 +21,7 @@ namespace executors {
 namespace sched {
 
 struct pthread_struct {
-    void* __unused[90]; // Hacking here, may be platform dependent.
+    void* __unused[PADDING_SIZE];
     pid_t tid;
 };
 
