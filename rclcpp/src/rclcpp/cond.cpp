@@ -23,7 +23,7 @@ int syncutil::Condition::wait_on(const uint32_t val) {
     return 0;
 }
 
-int syncutil::Condition::set_val(const uint32_t val, bool wakeup) {
+int syncutil::Condition::set_val(const uint32_t val, const bool wakeup) {
     futex.store(val, std::memory_order_release);
     // race condition can occur here, as user may overwrite this value
     // this is fine in all our usecases.
