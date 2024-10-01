@@ -10,7 +10,7 @@ class Condition {
 
 public:
     int wait_on(const uint32_t val);
-    int set_val(const uint32_t val, bool wakeup);
+    int set_val(const uint32_t val, const bool wakeup);
 
 private:
     std::atomic<uint32_t> futex;

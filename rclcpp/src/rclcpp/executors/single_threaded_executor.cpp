@@ -16,6 +16,7 @@
 
 #include <pthread.h>
 #include <stdio.h>
+#include <thread>
 
 #include "rclcpp/callback_group.hpp"
 #include "rclcpp/executors/single_threaded_executor.hpp"
@@ -39,19 +40,18 @@ void handler(int sig, siginfo_t *si, void *uc) {
   data->signal_scheduler_ptr->set_val(1, true);
 }
 
-void* thread_start(void* pthread_arg) {
-  printf("thread start!");
-  rclcpp::executors::PthreadArg* arg = (rclcpp::executors::PthreadArg*) pthread_arg;
-  auto executor = arg->executor;
-  rclcpp::executors::ThreadData thread_data;
-  thread_data.any_exec = arg->any_exec;
+void
+SingleThreadedExecutor::thread_start(AnyExecutable any_exec, rclcpp::sched::SchedAttr* sched_attr) {
+  rclcpp::executors::ThreadData thread_data(std::move(any_exec));
   thread_data.is_busy.set_val(1, false);
-  delete arg;
+  pthread_t self = pthread_self();
+  thread_data.pid = sched::get_pid(self);
+  thread_data.sched_attr = sched_attr;
   while (true) {
     thread_data.is_busy.wait_on(0);
-    executor->execute_executable(thread_data.any_exec);
+    this->execute_executable(thread_data.any_exec);
     thread_data.is_busy.set_val(0, false);
-    executor->idle_threads.push(&thread_data);
+    this->idle_threads.push(&thread_data);
   }
 }
 
@@ -182,13 +182,30 @@ SingleThreadedExecutor::get_next_ready_executable(AnyExecutable & any_executable
 }
 
 
-inline void SingleThreadedExecutor::create_thread(rclcpp::AnyExecutable any_exec) {
-    PthreadArg* pthread_arg= new PthreadArg(this, any_exec);
-    pthread_t pid;
-    pthread_create(&pid, NULL, thread_start, (void*) pthread_arg);
-    printf("thread created!\n");
-    pthread_detach(pid);
-    printf("thread detached!\n");
+inline rclcpp::sched::SchedAttr* SingleThreadedExecutor::get_sched_attr(const AnyExecutable& any_exec) {
+  if (any_exec.subscription != nullptr) {
+    return &(any_exec.subscription->sched_attr);
+  }
+  if (any_exec.timer != nullptr ) {
+    return &(any_exec.timer->sched_attr);
+  }
+  if (any_exec.service != nullptr) {
+    return &(any_exec.service->sched_attr);
+  }
+  if (any_exec.client != nullptr) {
+    return &(any_exec.client->sched_attr);
+  }
+    // this will never happen.
+  return nullptr;
+}
+
+inline void SingleThreadedExecutor::create_thread(AnyExecutable any_exec) {
+  auto attr = get_sched_attr(any_exec);
+  /* here we use std::thread instead of pthread to make it clean. They involve the same 
+     underlying syscalls. */
+  std::thread new_thread(&SingleThreadedExecutor::thread_start, this, std::move(any_exec), attr);
+  sched::syscall_sched_setattr(sched::get_pid(new_thread.native_handle()), attr);
+  new_thread.detach();
 }
 
 
@@ -196,10 +213,15 @@ inline void SingleThreadedExecutor::create_thread(rclcpp::AnyExecutable any_exec
 void SingleThreadedExecutor::assign_or_create(AnyExecutable any_exec) {
   auto idle_thread = idle_threads.pop();
   if (idle_thread == nullptr) {
-    create_thread(any_exec);
+    create_thread(std::move(any_exec));
     return;
   }
-  idle_thread->any_exec = any_exec;
+  auto attr = get_sched_attr(any_exec);
+  idle_thread->any_exec = std::move(any_exec);
+  if (*(idle_thread->sched_attr) != *attr) {
+    idle_thread->sched_attr = attr;
+    sched::syscall_sched_setattr(idle_thread->pid, attr);
+  }
   idle_thread->is_busy.set_val(1, true);
 }
 
@@ -273,7 +295,7 @@ void SingleThreadedExecutor::schedule() {
   rclcpp::AnyExecutable executable;
   while (get_next_executable(executable)) {
     printf("Executable available, assigning to threads.\n");
-    assign_or_create(executable);
+    assign_or_create(std::move(executable));
   }
   printf("No more available executable.\n");
   this->signal_scheduler.set_val(0, false);
