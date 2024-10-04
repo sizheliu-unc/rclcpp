@@ -515,7 +515,7 @@ protected:
    *   otherwise false
    */
   RCLCPP_PUBLIC
-  bool
+  virtual bool
   get_next_ready_executable(AnyExecutable & any_executable);
 
   /// Wait for executable in ready state and populate union structure.

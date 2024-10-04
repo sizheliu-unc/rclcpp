@@ -43,6 +43,7 @@ set(${PROJECT_NAME}_SRCS
   src/rclcpp/callback_group.cpp
   src/rclcpp/client.cpp
   src/rclcpp/clock.cpp
+  src/rclcpp/cond.cpp
   src/rclcpp/context.cpp
   src/rclcpp/contexts/default_context.cpp
   src/rclcpp/create_generic_client.cpp
