@@ -14,6 +14,7 @@
 
 #include "rcpputils/scope_exit.hpp"
 
+#include <cassert>
 #include <pthread.h>
 #include <stdio.h>
 #include <thread>
@@ -195,7 +196,8 @@ inline rclcpp::sched::SchedAttr* SingleThreadedExecutor::get_sched_attr(const An
   if (any_exec.client != nullptr) {
     return &(any_exec.client->sched_attr);
   }
-    // this will never happen.
+  // this will never happen.
+  assert(("Cannot execute executable!", false));
   return nullptr;
 }
 
