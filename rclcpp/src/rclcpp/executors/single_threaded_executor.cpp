@@ -145,14 +145,6 @@ inline rclcpp::sched::SchedAttr* SingleThreadedExecutor::get_sched_attr(const An
 }
 
 inline void SingleThreadedExecutor::create_thread(AnyExecutable any_exec) {
-  std::cout << "A new thread is created for Node " << any_exec.node_base->get_name();
-  if (any_exec.subscription != nullptr) {
-    std::cout << ", which is a subscription on topic " << any_exec.subscription->get_topic_name() << std::endl;
-  } else if (any_exec.timer != nullptr) {
-    std::cout << ", which is a timer that will be triggered in " << any_exec.timer->time_until_trigger().count() / 1'000'000 << "ms" << std::endl;
-  } else {
-    std::cout << ", which is either a service or a client." << std::endl;
-  }
   auto attr = get_sched_attr(any_exec);
   /* here we use std::thread instead of pthread to make it clean. They involve the same
      underlying syscalls. */
@@ -165,6 +157,14 @@ inline void SingleThreadedExecutor::create_thread(AnyExecutable any_exec) {
 
 
 void SingleThreadedExecutor::assign_or_create(AnyExecutable any_exec) {
+  std::cout << "A new exec is dispatched for Node " << any_exec.node_base->get_name();
+  if (any_exec.subscription != nullptr) {
+    std::cout << ", which is a subscription on topic " << any_exec.subscription->get_topic_name() << std::endl;
+  } else if (any_exec.timer != nullptr) {
+    std::cout << ", which is a timer that will be triggered in " << any_exec.timer->time_until_trigger().count() / 1'000'000 << "ms" << std::endl;
+  } else {
+    std::cout << ", which is either a service or a client." << std::endl;
+  }
   auto idle_thread = idle_threads.pop();
   if (idle_thread == nullptr) {
     create_thread(std::move(any_exec));
