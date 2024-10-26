@@ -18,6 +18,7 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <thread>
+#include <signal.h>
 
 #include "rclcpp/callback_group.hpp"
 
@@ -148,14 +149,7 @@ inline void SingleThreadedExecutor::create_thread(AnyExecutable any_exec) {
   /* here we use std::thread instead of pthread to make it clean. They involve the same
      underlying syscalls. */
   std::thread new_thread(&SingleThreadedExecutor::thread_start, this, std::move(any_exec), attr);
-  long retval = sched::syscall_sched_setattr(sched::get_pid(new_thread.native_handle()), attr);
-	if (retval != 0)
-	{
-		std::cout << "The return code of sycall_sched_setattr was " << retval << "\n";
-		std::cout << "Tried setting priority to " << attr->sched_priority << " and sched class to " 
-		<< attr->sched_policy << "\n";
-    std::cout << "Errno is " << errno << std::endl;
-	}
+  sched::syscall_sched_setattr(sched::get_pid(new_thread.native_handle()), attr);
   new_thread.detach();
 }
 
@@ -190,15 +184,17 @@ SingleThreadedExecutor::spin()
     throw std::runtime_error("spin() called while already spinning");
   }
   RCPPUTILS_SCOPE_EXIT(this->spinning.store(false); );
+  pid_t cur_tid = gettid();
 
 	timer_t timerId = 0;
   t_eventData eventData = {&signal_scheduler};
   union sigval sigv;
   sigv.sival_ptr = &eventData;
   struct sigevent sev = {};
-  sev.sigev_notify = SIGEV_SIGNAL;
+  sev.sigev_notify = SIGEV_THREAD_ID;
   sev.sigev_signo = SIGRTMIN;
   sev.sigev_value = sigv;
+  sev._sigev_un._tid = cur_tid;
   /* specifies the action when receiving a signal */
   struct sigaction sa = {};
 
@@ -218,7 +214,7 @@ SingleThreadedExecutor::spin()
       return;
   }
 
-  sa.sa_flags = SA_SIGINFO;
+  sa.sa_flags = (SA_SIGINFO | SA_RESTART);
   sa.sa_sigaction = handler;
 
   /* Initialize signal */
@@ -243,10 +239,8 @@ void SingleThreadedExecutor::schedule() {
   this->signal_scheduler.wait_on(0);
   rclcpp::AnyExecutable executable;
   while (get_next_executable(executable, std::chrono::nanoseconds::zero())) {
-    printf("Executable available, assigning to threads.\n");
     assign_or_create(std::move(executable));
   }
-  printf("No more available executable.\n");
   this->signal_scheduler.set_val(0, false);
 }
 
