@@ -34,6 +34,10 @@ struct AnyExecutable
 {
   RCLCPP_PUBLIC
   AnyExecutable();
+	AnyExecutable(const AnyExecutable& anyexec) = default;
+	AnyExecutable(AnyExecutable&& anyexec) = default;
+	AnyExecutable& operator=(AnyExecutable&& anyexec) = default;
+
 
   RCLCPP_PUBLIC
   virtual ~AnyExecutable();
