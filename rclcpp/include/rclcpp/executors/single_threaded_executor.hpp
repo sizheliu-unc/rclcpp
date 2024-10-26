@@ -20,6 +20,7 @@
 #include <cassert>
 #include <cstdlib>
 #include <memory>
+#include <signal.h>
 #include <vector>
 
 #include "rclcpp/executor.hpp"
@@ -28,12 +29,24 @@
 #include "rclcpp/node.hpp"
 #include "rclcpp/utilities.hpp"
 #include "rclcpp/rate.hpp"
+#include "rclcpp/sched_base.hpp"
 #include "rclcpp/visibility_control.hpp"
+
+#include "rclcpp/cond.hpp"
+#include "rclcpp/stack.hpp"
 
 namespace rclcpp
 {
 namespace executors
 {
+
+struct ThreadData {
+  syncutil::Condition is_busy;
+  AnyExecutable any_exec;
+  pid_t pid;
+  sched::SchedAttr* sched_attr;
+  ThreadData(AnyExecutable any_exec): any_exec(std::move(any_exec)) {};
+};
 
 /// Single-threaded executor implementation.
 /**
@@ -65,8 +78,24 @@ public:
   void
   spin() override;
 
+  syncutil::StackAtomic<ThreadData> idle_threads;
+  RCLCPP_PUBLIC
+
+	bool get_next_ready_executable_from_map(
+		AnyExecutable & any_executable,
+		const rclcpp::memory_strategy::MemoryStrategy::WeakCallbackGroupsToNodesMap &
+		weak_groups_to_nodes) override;
+
 private:
   RCLCPP_DISABLE_COPY(SingleThreadedExecutor)
+  syncutil::Condition signal_scheduler;
+  void execute_executable(AnyExecutable any_exec);
+  void schedule();
+  void create_thread(AnyExecutable any_exec);
+  void assign_or_create(AnyExecutable any_exec);
+  void thread_start(AnyExecutable any_exec, sched::SchedAttr* sched_attr);
+  sched::SchedAttr* get_sched_attr(const AnyExecutable& any_exec);
+
 };
 
 }  // namespace executors

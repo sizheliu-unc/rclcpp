@@ -38,6 +38,7 @@
 #include "rclcpp/network_flow_endpoint.hpp"
 #include "rclcpp/qos.hpp"
 #include "rclcpp/qos_event.hpp"
+#include "rclcpp/sched_base.hpp"
 #include "rclcpp/serialized_message.hpp"
 #include "rclcpp/subscription_content_filter_options.hpp"
 #include "rclcpp/type_support_decl.hpp"
@@ -62,7 +63,7 @@ class IntraProcessManager;
 
 /// Virtual base class for subscriptions. This pattern allows us to iterate over different template
 /// specializations of Subscription, among other things.
-class SubscriptionBase : public std::enable_shared_from_this<SubscriptionBase>
+class SubscriptionBase : public sched::SchedBase, public std::enable_shared_from_this<SubscriptionBase>
 {
 public:
   RCLCPP_SMART_PTR_DEFINITIONS_NOT_COPYABLE(SubscriptionBase)
