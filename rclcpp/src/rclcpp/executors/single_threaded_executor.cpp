@@ -172,10 +172,8 @@ void SingleThreadedExecutor::assign_or_create(AnyExecutable any_exec) {
   }
   auto attr = get_sched_attr(any_exec);
   idle_thread->any_exec = std::move(any_exec);
-  if (*(idle_thread->sched_attr) != *attr) {
-    idle_thread->sched_attr = attr;
-    sched::syscall_sched_setattr(idle_thread->pid, attr);
-  }
+  idle_thread->sched_attr = attr;
+  sched::syscall_sched_setattr(idle_thread->pid, attr);
   idle_thread->is_busy.set_val(1, true);
 }
 
