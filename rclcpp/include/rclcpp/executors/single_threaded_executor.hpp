@@ -88,6 +88,9 @@ public:
 
 private:
   RCLCPP_DISABLE_COPY(SingleThreadedExecutor)
+  void spin_timer(int period_ns);
+  void spin_sleep(int period_ns);
+  void spin_deadline(int period_ns);
   syncutil::Condition signal_scheduler;
   void execute_executable(AnyExecutable any_exec);
   void schedule();
