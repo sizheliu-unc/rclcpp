@@ -277,7 +277,7 @@ SingleThreadedExecutor::spin_sleep(int period_ns)
   int err = 0;
   next_time(period_ns, it);
   while (rclcpp::ok(this->context_) && spinning.load()) {
-    while(err = clock_nanosleep(CLOCK_MONOTONIC, flags, &it, NULL); err != 0 && errno == EINTR);
+    while((err = clock_nanosleep(CLOCK_MONOTONIC, flags, &it, NULL)) && errno == EINTR);
     assert(err == 0);
     this->schedule();
     next_time(period_ns, it); // this avoids the situation where the scheduler gets overwhelmed.
