@@ -19,11 +19,14 @@
 #include <stdio.h>
 #include <thread>
 #include <signal.h>
+#include <sys/syscall.h>
+#include <sched.h>
 
 #include "rclcpp/callback_group.hpp"
 
 #include "rclcpp/executors/single_threaded_executor.hpp"
 #include "rclcpp/any_executable.hpp"
+#include "rclcpp/sched_base.hpp"
 
 #include "tracetools/tracetools.h"
 
@@ -157,14 +160,6 @@ inline void SingleThreadedExecutor::create_thread(AnyExecutable any_exec) {
 
 
 void SingleThreadedExecutor::assign_or_create(AnyExecutable any_exec) {
-  std::cout << "A new exec is dispatched for Node " << any_exec.node_base->get_name();
-  if (any_exec.subscription != nullptr) {
-    std::cout << ", which is a subscription on topic " << any_exec.subscription->get_topic_name() << std::endl;
-  } else if (any_exec.timer != nullptr) {
-    std::cout << ", which is a timer that will be triggered in " << any_exec.timer->time_until_trigger().count() / 1'000'000 << "ms" << std::endl;
-  } else {
-    std::cout << ", which is either a service or a client." << std::endl;
-  }
   auto idle_thread = idle_threads.pop();
   if (idle_thread == nullptr) {
     create_thread(std::move(any_exec));
@@ -183,6 +178,8 @@ SingleThreadedExecutor::SingleThreadedExecutor(const rclcpp::ExecutorOptions & o
 : rclcpp::Executor(options) {}
 
 SingleThreadedExecutor::~SingleThreadedExecutor() {}
+
+#ifdef USE_TIMER
 
 void
 SingleThreadedExecutor::spin()
@@ -242,12 +239,36 @@ SingleThreadedExecutor::spin()
   }
 }
 
-void SingleThreadedExecutor::schedule() {
-  this->signal_scheduler.wait_on(0);
-  rclcpp::AnyExecutable executable;
-  while (get_next_executable(executable, std::chrono::nanoseconds::zero())) {
-    assign_or_create(std::move(executable));
+#else
+
+void
+SingleThreadedExecutor::spin()
+{
+  if (spinning.exchange(true)) {
+    throw std::runtime_error("spin() called while already spinning");
   }
-  this->signal_scheduler.set_val(0, false);
+  RCPPUTILS_SCOPE_EXIT(this->spinning.store(false); );
+  sched::SchedAttr attr;
+  attr.sched_policy = SCHED_DEADLINE;
+  attr.sched_period = 500'000;
+  attr.sched_runtime = 500'000;
+  attr.sched_deadline = 500'000;
+  syscall(SYS_sched_setattr, gettid(), attr, 0);
+  while (rclcpp::ok(this->context_) && spinning.load()) {
+    this->schedule();
+    sched_yield();
+  }
 }
 
+#endif
+
+void SingleThreadedExecutor::schedule() {
+  rclcpp::AnyExecutable executable;
+  if (!get_next_executable(executable, std::chrono::nanoseconds::zero())) {
+    return;
+  }
+  assign_or_create(std::move(executable));
+  while (get_next_ready_executable(executable)) {
+    assign_or_create(std::move(executable));
+  }
+}
