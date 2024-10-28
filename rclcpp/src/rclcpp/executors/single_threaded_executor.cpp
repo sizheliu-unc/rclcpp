@@ -31,6 +31,9 @@
 #include "tracetools/tracetools.h"
 
 #define UNUSED(expr) do { (void)(expr); } while (0)
+#define DEFAULT_INTERVAL 500'000
+
+#define SEC_IN_NSEC 1'000'000'000
 
 using rclcpp::executors::SingleThreadedExecutor;
 
@@ -179,17 +182,36 @@ SingleThreadedExecutor::SingleThreadedExecutor(const rclcpp::ExecutorOptions & o
 
 SingleThreadedExecutor::~SingleThreadedExecutor() {}
 
-#ifdef USE_TIMER
-
 void
-SingleThreadedExecutor::spin()
-{
+SingleThreadedExecutor::spin() {
   if (spinning.exchange(true)) {
     throw std::runtime_error("spin() called while already spinning");
   }
   RCPPUTILS_SCOPE_EXIT(this->spinning.store(false); );
-  pid_t cur_tid = gettid();
+  int period_ns;
+  char* method = getenv("ROS_SCHED_METHOD");
+  char* period_str = getenv("ROS_SCHED_PERIOD");
+  if (period_str == nullptr) {
+    period_ns = DEFAULT_INTERVAL;
+  } else {
+    period_ns = atoi(period_str);
+    assert(period_ns < SEC_IN_NSEC);
+  }
+  if (method == nullptr || strcmp(method, "DEADLINE") == 0) {
+    spin_deadline(period_ns);
+  } else if (strcmp(method, "SLEEP") == 0) {
+    spin_sleep(period_ns);
+  } else if (strcmp(method, "TIMER") == 0) {
+    spin_timer(period_ns);
+  } else {
+    assert(("Invalid ROS scheduling method given!", false));
+  }
+}
 
+void
+SingleThreadedExecutor::spin_timer(int period_ns)
+{
+  pid_t cur_tid = gettid();
 	timer_t timerId = 0;
   t_eventData eventData = {&signal_scheduler};
   union sigval sigv;
@@ -206,8 +228,8 @@ SingleThreadedExecutor::spin()
   struct itimerspec its = {};
   struct timespec it_interval = {};
   struct timespec it_value = {};
-  it_interval.tv_nsec = 500'000;
-  it_value.tv_nsec = 500'000;
+  it_interval.tv_nsec = period_ns;
+  it_value.tv_nsec = period_ns;
   its.it_interval = it_interval;
   its.it_value = it_value;
 
@@ -239,28 +261,43 @@ SingleThreadedExecutor::spin()
   }
 }
 
-#else
+void next_time(int period_ns, struct timespec& cur_time) {
+  assert(clock_gettime(CLOCK_MONOTONIC, &cur_time) == 0);
+  cur_time.tv_nsec -= cur_time.tv_nsec % period_ns - period_ns;
+  cur_time.tv_sec += cur_time.tv_nsec % SEC_IN_NSEC;
+  cur_time.tv_nsec %= SEC_IN_NSEC;
+  return;
+}
 
 void
-SingleThreadedExecutor::spin()
+SingleThreadedExecutor::spin_sleep(int period_ns)
 {
-  if (spinning.exchange(true)) {
-    throw std::runtime_error("spin() called while already spinning");
+  struct timespec it;
+  int flags = TIMER_ABSTIME;
+  int err = 0;
+  next_time(period_ns, it);
+  while (rclcpp::ok(this->context_) && spinning.load()) {
+    while(err = clock_nanosleep(CLOCK_MONOTONIC, flags, &it, NULL); err != 0 && errno == EINTR);
+    assert(err == 0);
+    this->schedule();
+    next_time(period_ns, it); // this avoids the situation where the scheduler gets overwhelmed.
   }
-  RCPPUTILS_SCOPE_EXIT(this->spinning.store(false); );
+}
+
+void
+SingleThreadedExecutor::spin_deadline(int period_ns)
+{
   sched::SchedAttr attr;
   attr.sched_policy = SCHED_DEADLINE;
-  attr.sched_period = 500'000;
-  attr.sched_runtime = 500'000;
-  attr.sched_deadline = 500'000;
+  attr.sched_period = period_ns;
+  attr.sched_runtime = period_ns;
+  attr.sched_deadline = period_ns;
   syscall(SYS_sched_setattr, gettid(), attr, 0);
   while (rclcpp::ok(this->context_) && spinning.load()) {
     this->schedule();
     sched_yield();
   }
 }
-
-#endif
 
 void SingleThreadedExecutor::schedule() {
   rclcpp::AnyExecutable executable;
