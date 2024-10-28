@@ -305,7 +305,11 @@ void SingleThreadedExecutor::schedule() {
     return;
   }
   assign_or_create(std::move(executable));
-  while (get_next_ready_executable(executable)) {
-    assign_or_create(std::move(executable));
+  while (true) {
+    rclcpp::AnyExecutable ready_executable;
+    if (!get_next_ready_executable(ready_executable)) {
+      return;
+    }
+    assign_or_create(std::move(ready_executable));
   }
 }
