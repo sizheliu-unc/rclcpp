@@ -76,7 +76,6 @@ operator!=(const SchedAttr& lhs, const SchedAttr& rhs) {
 inline long
 syscall_sched_setattr(pid_t pid, const SchedAttr* sched_attr) {
     /* flags are currently unused, may enable in the future */
-    std::cout << "pid: " << pid << " policy: " << sched_attr->sched_policy << " priority: " << sched_attr->sched_priority << std::endl;
     return syscall(SYS_sched_setattr, pid, sched_attr, 0);
 }
 

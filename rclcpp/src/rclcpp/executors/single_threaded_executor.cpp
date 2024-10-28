@@ -292,7 +292,7 @@ SingleThreadedExecutor::spin_deadline(int period_ns)
   attr.sched_period = period_ns;
   attr.sched_runtime = period_ns;
   attr.sched_deadline = period_ns;
-  syscall(SYS_sched_setattr, gettid(), attr, 0);
+  sched::syscall_sched_setattr(gettid(), &attr);
   while (rclcpp::ok(this->context_) && spinning.load()) {
     this->schedule();
     sched_yield();
