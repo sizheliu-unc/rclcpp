@@ -20,7 +20,9 @@
 #include <thread>
 #include <signal.h>
 #include <sys/syscall.h>
+#include <unordered_set>
 #include <sched.h>
+#include <system_error>
 
 #include "rclcpp/callback_group.hpp"
 
@@ -51,15 +53,19 @@ void handler(int sig, siginfo_t *si, void *uc) {
 
 void
 SingleThreadedExecutor::thread_start(AnyExecutable any_exec, rclcpp::sched::SchedAttr* sched_attr) {
+  TRACEPOINT(rclcpp_worker_thread_spawn);
   rclcpp::executors::ThreadData thread_data(std::move(any_exec));
   thread_data.is_busy.set_val(1, false);
   pthread_t self = pthread_self();
   thread_data.pid = sched::get_pid(self);
   thread_data.sched_attr = sched_attr;
   while (true) {
+    TRACEPOINT(rclcpp_worker_thread_yield);
     thread_data.is_busy.wait_on(0);
+    TRACEPOINT(rclcpp_worker_thread_resume);
     this->execute_executable(thread_data.any_exec);
     thread_data.is_busy.set_val(0, false);
+    TRACEPOINT(rclcpp_idle_thread_stack_push);
     this->idle_threads.push(&thread_data);
   }
 }
@@ -69,9 +75,14 @@ void SingleThreadedExecutor::execute_executable(AnyExecutable any_exec) {
     any_exec.callback_group->callback_group_mutex.lock();
     execute_any_executable(any_exec);
     any_exec.callback_group->callback_group_mutex.unlock();
+    any_exec.callback_group.reset();
     return;
   }
   execute_any_executable(any_exec);
+
+  // Clear the callback_group to prevent the AnyExecutable destructor from
+  // resetting the callback group `can_be_taken_from`
+  any_exec.callback_group.reset();
 
 
 }
@@ -120,14 +131,28 @@ bool SingleThreadedExecutor::get_next_ready_executable_from_map(
   }
   // At this point any_executable should be valid with either a valid subscription
   // or a valid timer, or it should be a null shared_ptr
-/*  if (success) {
+  if (success) {
     rclcpp::CallbackGroup::WeakPtr weak_group_ptr = any_executable.callback_group;
     auto iter = weak_groups_to_nodes.find(weak_group_ptr);
     if (iter == weak_groups_to_nodes.end()) {
       success = false;
     }
-  }*/
+  }
 
+  if (success) {
+    // If it is valid, check to see if the group is mutually exclusive or
+    // not, then mark it accordingly ..Check if the callback_group belongs to this executor
+    if (any_executable.callback_group && any_executable.callback_group->type() == \
+      CallbackGroupType::MutuallyExclusive)
+    {
+      // It should not have been taken otherwise
+      assert(any_executable.callback_group->can_be_taken_from().load());
+      // Set to false to indicate something is being run from this group
+      // This is reset to true either when the any_executable is executed or when the
+      // any_executable is destructued
+      any_executable.callback_group->can_be_taken_from().store(false);
+    }
+  }
   // If there is no ready executable, return false
   return success;
 }
@@ -154,17 +179,30 @@ inline void SingleThreadedExecutor::create_thread(AnyExecutable any_exec) {
   auto attr = get_sched_attr(any_exec);
   /* here we use std::thread instead of pthread to make it clean. They involve the same
      underlying syscalls. */
-  std::thread new_thread(&SingleThreadedExecutor::thread_start, this, std::move(any_exec), attr);
-  sched::syscall_sched_setattr(sched::get_pid(new_thread.native_handle()), attr);
-  new_thread.detach();
 
+  const std::string nodeName = any_exec.node_base->get_name();
+  try
+  {
+    std::thread new_thread(&SingleThreadedExecutor::thread_start, this, std::move(any_exec), attr);
+    sched::syscall_sched_setattr(sched::get_pid(new_thread.native_handle()), attr);
+    new_thread.detach();
+  }
+  catch(const std::system_error& e)
+  {
+      std::cout << "Caught system_error with code "
+                    "[" << e.code() << "] meaning "
+                    "[" << e.what() << "]\n";
+      std::cout << "Failed to create thread for node " << nodeName << std::endl;
+  }
 }
 
 
 
 void SingleThreadedExecutor::assign_or_create(AnyExecutable any_exec) {
+  TRACEPOINT(rclcpp_idle_thread_stack_pop);
   auto idle_thread = idle_threads.pop();
   if (idle_thread == nullptr) {
+    TRACEPOINT(rclcpp_create_worker_thread);
     create_thread(std::move(any_exec));
     return;
   }
@@ -172,6 +210,7 @@ void SingleThreadedExecutor::assign_or_create(AnyExecutable any_exec) {
   idle_thread->any_exec = std::move(any_exec);
   idle_thread->sched_attr = attr;
   sched::syscall_sched_setattr(idle_thread->pid, attr);
+  TRACEPOINT(rclcpp_wake_worker_thread, idle_thread->pid);
   idle_thread->is_busy.set_val(1, true);
 }
 
@@ -261,6 +300,17 @@ SingleThreadedExecutor::spin_timer(int period_ns)
   }
 }
 
+void inc_period(struct timespec& period_time, int period_ns) 
+{
+  period_time.tv_nsec += period_ns;
+
+  while (period_time.tv_nsec >= 1000000000) {
+          /* timespec nsec overflow */
+          period_time.tv_sec++;
+          period_time.tv_nsec -= 1000000000;
+  }
+}
+
 void next_time(int period_ns, struct timespec& cur_time) {
   assert(clock_gettime(CLOCK_MONOTONIC, &cur_time) == 0);
   cur_time.tv_nsec -= cur_time.tv_nsec % period_ns - period_ns;
@@ -272,15 +322,24 @@ void next_time(int period_ns, struct timespec& cur_time) {
 void
 SingleThreadedExecutor::spin_sleep(int period_ns)
 {
-  struct timespec it;
+  sched::SchedAttr attr;
+  attr.sched_policy = SCHED_FIFO;
+  attr.sched_priority = 99;
+  assert(sched::syscall_sched_setattr(gettid(), &attr) == 0);
+
+
+  struct timespec period_point;
   int flags = TIMER_ABSTIME;
   int err = 0;
-  next_time(period_ns, it);
+  assert(clock_gettime(CLOCK_MONOTONIC, &period_point) == 0);
+  inc_period(period_point, period_ns);
+  //next_time(period_ns, it);
   while (rclcpp::ok(this->context_) && spinning.load()) {
-    while((err = clock_nanosleep(CLOCK_MONOTONIC, flags, &it, NULL)) && errno == EINTR);
+    while((err = clock_nanosleep(CLOCK_MONOTONIC, flags, &period_point, NULL)) && errno == EINTR);
     assert(err == 0);
     this->schedule();
-    next_time(period_ns, it); // this avoids the situation where the scheduler gets overwhelmed.
+    //next_time(period_ns, it); // this avoids the situation where the scheduler gets overwhelmed.
+    inc_period(period_point, period_ns);
   }
 }
 
@@ -300,16 +359,26 @@ SingleThreadedExecutor::spin_deadline(int period_ns)
 }
 
 void SingleThreadedExecutor::schedule() {
+  TRACEPOINT(rclcpp_schedule_start);
+  int num_cb_dispatched = 0;
   rclcpp::AnyExecutable executable;
-  if (!get_next_executable(executable, std::chrono::nanoseconds::zero())) {
+  if (!get_next_executable(executable)) {
+    TRACEPOINT(rclcpp_schedule_end, 0);
     return;
   }
+  
   assign_or_create(std::move(executable));
+  
+  num_cb_dispatched++;
   while (true) {
     rclcpp::AnyExecutable ready_executable;
     if (!get_next_ready_executable(ready_executable)) {
+      TRACEPOINT(rclcpp_schedule_end, num_cb_dispatched);
       return;
     }
+
     assign_or_create(std::move(ready_executable));
+    num_cb_dispatched++;
   }
+  TRACEPOINT(rclcpp_schedule_end, num_cb_dispatched);
 }
