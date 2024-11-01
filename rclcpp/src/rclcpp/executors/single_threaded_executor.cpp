@@ -327,19 +327,14 @@ SingleThreadedExecutor::spin_sleep(int period_ns)
   attr.sched_priority = 99;
   assert(sched::syscall_sched_setattr(gettid(), &attr) == 0);
 
-
-  struct timespec period_point;
-  int flags = TIMER_ABSTIME;
-  int err = 0;
-  assert(clock_gettime(CLOCK_MONOTONIC, &period_point) == 0);
-  inc_period(period_point, period_ns);
-  //next_time(period_ns, it);
   while (rclcpp::ok(this->context_) && spinning.load()) {
-    while((err = clock_nanosleep(CLOCK_MONOTONIC, flags, &period_point, NULL)) && errno == EINTR);
-    assert(err == 0);
-    this->schedule();
-    //next_time(period_ns, it); // this avoids the situation where the scheduler gets overwhelmed.
-    inc_period(period_point, period_ns);
+    while (true) {
+      rclcpp::AnyExecutable executable;
+      if (!get_next_executable(executable)) {
+        break;
+      }
+      assign_or_create(std::move(executable));
+    }
   }
 }
 

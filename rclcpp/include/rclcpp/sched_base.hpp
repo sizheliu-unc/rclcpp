@@ -29,10 +29,10 @@ struct pthread_struct {
 
 struct SchedAttr {
     uint32_t size = sizeof(SchedAttr);              /* Size of this structure */
-    uint32_t sched_policy = SCHED_OTHER;      /* Policy (SCHED_*) */
+    uint32_t sched_policy = SCHED_RR;      /* Policy (SCHED_*) */
     uint64_t sched_flags = 0;       /* Flags */
     int32_t  sched_nice = 0;        /* Nice value (SCHED_OTHER, SCHED_BATCH) */
-    uint32_t sched_priority = 0;    /* Static priority (SCHED_FIFO, SCHED_RR) */
+    uint32_t sched_priority = 10;    /* Staticq priority (SCHED_FIFO, SCHED_RR) */
 
     /* For SCHED_DEADLINE */
     uint64_t sched_runtime = 0;
