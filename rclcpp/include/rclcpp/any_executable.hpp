@@ -42,6 +42,19 @@ struct AnyExecutable
   RCLCPP_PUBLIC
   virtual ~AnyExecutable();
 
+  RCLCPP_PUBLIC
+  bool operator==(const AnyExecutable& other) const {
+    return (subscription == other.subscription) &&
+           (timer == other.timer) &&
+           (service == other.service) &&
+           (client == other.client) &&
+           (waitable == other.waitable) &&
+           (callback_group == other.callback_group) &&
+           (node_base == other.node_base) &&
+           (data == other.data);
+  }
+
+
   // Only one of the following pointers will be set.
   rclcpp::SubscriptionBase::SharedPtr subscription;
   rclcpp::TimerBase::SharedPtr timer;
@@ -53,6 +66,24 @@ struct AnyExecutable
   rclcpp::node_interfaces::NodeBaseInterface::SharedPtr node_base;
   std::shared_ptr<void> data;
 };
+
+struct AnyExecutableHash {
+    RCLCPP_PUBLIC
+    std::size_t operator()(const AnyExecutable& anyExec) const {
+        std::size_t hash = 0;
+        // Combine hashes of the pointers; use std::hash to hash individual pointers
+        hash ^= std::hash<decltype(anyExec.subscription)>()(anyExec.subscription);
+        hash ^= std::hash<decltype(anyExec.timer)>()(anyExec.timer);
+        hash ^= std::hash<decltype(anyExec.service)>()(anyExec.service);
+        hash ^= std::hash<decltype(anyExec.client)>()(anyExec.client);
+        hash ^= std::hash<decltype(anyExec.waitable)>()(anyExec.waitable);
+        hash ^= std::hash<decltype(anyExec.callback_group)>()(anyExec.callback_group);
+        hash ^= std::hash<decltype(anyExec.node_base)>()(anyExec.node_base);
+        hash ^= std::hash<void*>()(anyExec.data.get()); // Hash the raw pointer from the shared_ptr
+        return hash;
+    }
+};
+
 
 }  // namespace rclcpp
 
