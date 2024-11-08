@@ -588,6 +588,7 @@ Executor::execute_subscription(rclcpp::SubscriptionBase::SharedPtr subscription)
   message_info.get_rmw_message_info().from_intra_process = false;
 
   if (subscription->is_serialized()) {
+    assert(false);
     // This is the case where a copy of the serialized message is taken from
     // the middleware via inter-process communication.
     std::shared_ptr<SerializedMessage> serialized_msg = subscription->create_serialized_message();
@@ -601,6 +602,7 @@ Executor::execute_subscription(rclcpp::SubscriptionBase::SharedPtr subscription)
       });
     subscription->return_serialized_message(serialized_msg);
   } else if (subscription->can_loan_messages()) {
+    assert(false);
     // This is the case where a loaned message is taken from the middleware via
     // inter-process communication, given to the user for their callback,
     // and then returned.

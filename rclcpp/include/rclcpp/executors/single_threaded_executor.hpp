@@ -92,11 +92,11 @@ private:
   void spin_sleep(int period_ns);
   void spin_deadline(int period_ns);
   syncutil::Condition signal_scheduler;
-  void execute_executable(AnyExecutable any_exec);
+  void execute_executable(AnyExecutable any_exec, std::shared_ptr<void>& message, rclcpp::MessageInfo* message_info);
   void schedule();
   void create_thread(AnyExecutable any_exec);
   void assign_or_create(AnyExecutable any_exec);
-  void thread_start(AnyExecutable any_exec, sched::SchedAttr* sched_attr);
+  void thread_start(AnyExecutable any_exec, std::shared_ptr<void>& message, rclcpp::MessageInfo* message_info, sched::SchedAttr* sched_attr);
   sched::SchedAttr* get_sched_attr(const AnyExecutable& any_exec);
 
 };

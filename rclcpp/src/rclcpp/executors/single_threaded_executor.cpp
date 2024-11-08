@@ -52,7 +52,7 @@ void handler(int sig, siginfo_t *si, void *uc) {
 }
 
 void
-SingleThreadedExecutor::thread_start(AnyExecutable any_exec, rclcpp::sched::SchedAttr* sched_attr) {
+SingleThreadedExecutor::thread_start(AnyExecutable any_exec, std::shared_ptr<void>& message, rclcpp::MessageInfo* message_info, rclcpp::sched::SchedAttr* sched_attr) {
   TRACEPOINT(rclcpp_worker_thread_spawn);
   rclcpp::executors::ThreadData thread_data(std::move(any_exec));
   thread_data.is_busy.set_val(1, false);
@@ -63,22 +63,46 @@ SingleThreadedExecutor::thread_start(AnyExecutable any_exec, rclcpp::sched::Sche
     TRACEPOINT(rclcpp_worker_thread_yield);
     thread_data.is_busy.wait_on(0);
     TRACEPOINT(rclcpp_worker_thread_resume);
-    this->execute_executable(thread_data.any_exec);
+    this->execute_executable(thread_data.any_exec, message, message_info);
     thread_data.is_busy.set_val(0, false);
     TRACEPOINT(rclcpp_idle_thread_stack_push);
     this->idle_threads.push(&thread_data);
   }
 }
 
-void SingleThreadedExecutor::execute_executable(AnyExecutable any_exec) {
+void SingleThreadedExecutor::execute_executable(AnyExecutable any_exec, std::shared_ptr<void>& message, rclcpp::MessageInfo* message_info) {
   if (any_exec.callback_group->type() == CallbackGroupType::MutuallyExclusive) {
     any_exec.callback_group->callback_group_mutex.lock();
-    execute_any_executable(any_exec);
+    if (any_exec.subscription == nullptr)
+    {
+      execute_any_executable(any_exec);
+    }
+    else
+    {
+      assert(message);
+      assert(message_info);
+      any_exec.subscription->handle_message(message, *message_info);
+      any_exec.subscription->return_message(message);
+      delete message_info;
+    }
     any_exec.callback_group->callback_group_mutex.unlock();
     any_exec.callback_group.reset();
     return;
   }
-  execute_any_executable(any_exec);
+
+
+  if (any_exec.subscription == nullptr)
+  {
+    execute_any_executable(any_exec);
+  }
+  else
+  {
+    assert(message);
+    assert(message_info);
+    any_exec.subscription->handle_message(message, *message_info);
+    any_exec.subscription->return_message(message);
+    delete message_info;
+  }
 
   // Clear the callback_group to prevent the AnyExecutable destructor from
   // resetting the callback group `can_be_taken_from`
@@ -139,20 +163,20 @@ bool SingleThreadedExecutor::get_next_ready_executable_from_map(
     }
   }
 
-  if (success) {
-    // If it is valid, check to see if the group is mutually exclusive or
-    // not, then mark it accordingly ..Check if the callback_group belongs to this executor
-    if (any_executable.callback_group && any_executable.callback_group->type() == \
-      CallbackGroupType::MutuallyExclusive)
-    {
-      // It should not have been taken otherwise
-      assert(any_executable.callback_group->can_be_taken_from().load());
-      // Set to false to indicate something is being run from this group
-      // This is reset to true either when the any_executable is executed or when the
-      // any_executable is destructued
-      any_executable.callback_group->can_be_taken_from().store(false);
-    }
-  }
+  // if (success) {
+  //   // If it is valid, check to see if the group is mutually exclusive or
+  //   // not, then mark it accordingly ..Check if the callback_group belongs to this executor
+  //   if (any_executable.callback_group && any_executable.callback_group->type() == \
+  //     CallbackGroupType::MutuallyExclusive)
+  //   {
+  //     // It should not have been taken otherwise
+  //     assert(any_executable.callback_group->can_be_taken_from().load());
+  //     // Set to false to indicate something is being run from this group
+  //     // This is reset to true either when the any_executable is executed or when the
+  //     // any_executable is destructued
+  //     any_executable.callback_group->can_be_taken_from().store(false);
+  //   }
+  // }
   // If there is no ready executable, return false
   return success;
 }
@@ -171,7 +195,7 @@ inline rclcpp::sched::SchedAttr* SingleThreadedExecutor::get_sched_attr(const An
     return &(any_exec.client->sched_attr);
   }
   // this will never happen.
-  assert(("Cannot execute executable!", false));
+  assert(false);
   return nullptr;
 }
 
@@ -181,9 +205,41 @@ inline void SingleThreadedExecutor::create_thread(AnyExecutable any_exec) {
      underlying syscalls. */
 
   const std::string nodeName = any_exec.node_base->get_name();
+  std::shared_ptr<void> message(nullptr);
+  rclcpp::MessageInfo* message_info = new rclcpp::MessageInfo;
+
   try
   {
-    std::thread new_thread(&SingleThreadedExecutor::thread_start, this, std::move(any_exec), attr);
+    if (any_exec.subscription != nullptr)
+    {
+      message_info->get_rmw_message_info().from_intra_process = false;
+      message = any_exec.subscription->create_message();
+
+      bool taken = false;
+      try {
+        taken = any_exec.subscription->take_type_erased(message.get(), *message_info);
+      } catch (const rclcpp::exceptions::RCLError & rcl_error) {
+        RCLCPP_ERROR(
+          rclcpp::get_logger("rclcpp"),
+          "executor taking a message from topic '%s' unexpectedly failed: %s",
+          any_exec.subscription->get_topic_name(),
+          rcl_error.what());
+      }
+      if (!taken)
+      {
+        RCLCPP_DEBUG(
+          rclcpp::get_logger("rclcpp"),
+          "executor taking a message from topic '%s' failed to take anything",
+          any_exec.subscription->get_topic_name());
+        
+        // No point spinning off a thread that won't have anything to work on
+        any_exec.subscription->return_message(message);
+        delete message_info;
+        return;
+      }
+    }
+
+    std::thread new_thread(std::bind(&SingleThreadedExecutor::thread_start, this, std::move(any_exec), message, message_info, attr));
     sched::syscall_sched_setattr(sched::get_pid(new_thread.native_handle()), attr);
     new_thread.detach();
   }
@@ -243,7 +299,7 @@ SingleThreadedExecutor::spin() {
   } else if (strcmp(method, "TIMER") == 0) {
     spin_timer(period_ns);
   } else {
-    assert(("Invalid ROS scheduling method given!", false));
+    assert(false);
   }
 }
 
@@ -327,14 +383,28 @@ SingleThreadedExecutor::spin_sleep(int period_ns)
   attr.sched_priority = 99;
   assert(sched::syscall_sched_setattr(gettid(), &attr) == 0);
 
+  // Setup timer so it sleeps until the next period point
+  struct timespec period_point;
+  int flags = TIMER_ABSTIME;
+  int err = 0;
+  assert(clock_gettime(CLOCK_MONOTONIC, &period_point) == 0);
+  inc_period(period_point, period_ns);
+
   while (rclcpp::ok(this->context_) && spinning.load()) {
-    while (true) {
-      rclcpp::AnyExecutable executable;
-      if (!get_next_executable(executable)) {
-        break;
-      }
-      assign_or_create(std::move(executable));
-    }
+
+    // Sleep until next period
+    while((err = clock_nanosleep(CLOCK_MONOTONIC, flags, &period_point, NULL)) && errno == EINTR);
+    assert(err == 0);
+    this->schedule();
+    inc_period(period_point, period_ns);
+
+    // while (true) {
+    //   rclcpp::AnyExecutable executable;
+    //   if (!get_next_executable(executable)) {
+    //     break;
+    //   }
+    //   assign_or_create(std::move(executable));
+    // }
   }
 }
 
@@ -357,7 +427,7 @@ void SingleThreadedExecutor::schedule() {
   TRACEPOINT(rclcpp_schedule_start);
   int num_cb_dispatched = 0;
   rclcpp::AnyExecutable executable;
-  if (!get_next_executable(executable)) {
+  if (!get_next_executable(executable, std::chrono::nanoseconds::zero())) {
     TRACEPOINT(rclcpp_schedule_end, 0);
     return;
   }
