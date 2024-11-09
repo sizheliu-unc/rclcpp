@@ -55,6 +55,9 @@ void
 SingleThreadedExecutor::thread_start(AnyExecutable any_exec, std::shared_ptr<void>& message, rclcpp::MessageInfo* message_info, rclcpp::sched::SchedAttr* sched_attr) {
   TRACEPOINT(rclcpp_worker_thread_spawn);
   rclcpp::executors::ThreadData thread_data(std::move(any_exec));
+	thread_data.message = message;
+	thread_data.message_info = message_info;
+
   thread_data.is_busy.set_val(1, false);
   pthread_t self = pthread_self();
   thread_data.pid = sched::get_pid(self);
@@ -199,46 +202,51 @@ inline rclcpp::sched::SchedAttr* SingleThreadedExecutor::get_sched_attr(const An
   return nullptr;
 }
 
-inline void SingleThreadedExecutor::create_thread(AnyExecutable any_exec) {
+static bool take_message(rclcpp::AnyExecutable& any_exec, std::shared_ptr<void>& message, rclcpp::MessageInfo* message_info)
+{
+	message_info = new rclcpp::MessageInfo;
+	message_info->get_rmw_message_info().from_intra_process = false;
+	message = any_exec.subscription->create_message();
+	assert(message);
+	assert(message.get() != nullptr);
+	bool taken = false;
+
+	try {
+		taken = any_exec.subscription->take_type_erased(message.get(), *message_info);
+	} catch (const rclcpp::exceptions::RCLError & rcl_error) {
+		RCLCPP_ERROR(
+			rclcpp::get_logger("rclcpp"),
+			"executor taking a message from topic '%s' unexpectedly failed: %s",
+			any_exec.subscription->get_topic_name(),
+			rcl_error.what());
+	}
+
+	if (!taken)
+	{
+		RCLCPP_DEBUG(
+			rclcpp::get_logger("rclcpp"),
+			"executor taking a message from topic '%s' failed to take anything",
+			any_exec.subscription->get_topic_name());
+		
+		// No point spinning off a thread that won't have anything to work on
+		any_exec.subscription->return_message(message);
+		delete message_info;
+	}
+
+	return taken;
+}
+
+inline void SingleThreadedExecutor::create_thread(AnyExecutable any_exec, std::shared_ptr<void>& message, rclcpp::MessageInfo* message_info) {
   auto attr = get_sched_attr(any_exec);
   /* here we use std::thread instead of pthread to make it clean. They involve the same
      underlying syscalls. */
 
   const std::string nodeName = any_exec.node_base->get_name();
-  std::shared_ptr<void> message(nullptr);
-  rclcpp::MessageInfo* message_info = new rclcpp::MessageInfo;
+	assert(message.get() != nullptr);
+	assert(message_info != nullptr);
 
   try
   {
-    if (any_exec.subscription != nullptr)
-    {
-      message_info->get_rmw_message_info().from_intra_process = false;
-      message = any_exec.subscription->create_message();
-
-      bool taken = false;
-      try {
-        taken = any_exec.subscription->take_type_erased(message.get(), *message_info);
-      } catch (const rclcpp::exceptions::RCLError & rcl_error) {
-        RCLCPP_ERROR(
-          rclcpp::get_logger("rclcpp"),
-          "executor taking a message from topic '%s' unexpectedly failed: %s",
-          any_exec.subscription->get_topic_name(),
-          rcl_error.what());
-      }
-      if (!taken)
-      {
-        RCLCPP_DEBUG(
-          rclcpp::get_logger("rclcpp"),
-          "executor taking a message from topic '%s' failed to take anything",
-          any_exec.subscription->get_topic_name());
-        
-        // No point spinning off a thread that won't have anything to work on
-        any_exec.subscription->return_message(message);
-        delete message_info;
-        return;
-      }
-    }
-
     std::thread new_thread(std::bind(&SingleThreadedExecutor::thread_start, this, std::move(any_exec), message, message_info, attr));
     sched::syscall_sched_setattr(sched::get_pid(new_thread.native_handle()), attr);
     new_thread.detach();
@@ -255,15 +263,32 @@ inline void SingleThreadedExecutor::create_thread(AnyExecutable any_exec) {
 
 
 void SingleThreadedExecutor::assign_or_create(AnyExecutable any_exec) {
+
+	std::shared_ptr<void> message(nullptr);
+	rclcpp::MessageInfo* message_info = nullptr;
+
+	if (any_exec.subscription)
+	{
+		bool taken = take_message(any_exec, message, message_info);	
+		if (!taken)
+		{
+			return;
+		}
+	}
+
   TRACEPOINT(rclcpp_idle_thread_stack_pop);
   auto idle_thread = idle_threads.pop();
   if (idle_thread == nullptr) {
     TRACEPOINT(rclcpp_create_worker_thread);
-    create_thread(std::move(any_exec));
+    create_thread(std::move(any_exec), message, message_info);
     return;
   }
   auto attr = get_sched_attr(any_exec);
   idle_thread->any_exec = std::move(any_exec);
+
+	idle_thread->message = message;
+	idle_thread->message_info = message_info;
+
   idle_thread->sched_attr = attr;
   sched::syscall_sched_setattr(idle_thread->pid, attr);
   TRACEPOINT(rclcpp_wake_worker_thread, idle_thread->pid);
