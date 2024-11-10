@@ -66,7 +66,7 @@ SingleThreadedExecutor::thread_start(AnyExecutable any_exec, std::shared_ptr<voi
     TRACEPOINT(rclcpp_worker_thread_yield);
     thread_data.is_busy.wait_on(0);
     TRACEPOINT(rclcpp_worker_thread_resume);
-    this->execute_executable(thread_data.any_exec, message, message_info);
+    this->execute_executable(thread_data.any_exec, thread_data.message, thread_data.message_info);
     thread_data.is_busy.set_val(0, false);
     TRACEPOINT(rclcpp_idle_thread_stack_push);
     this->idle_threads.push(&thread_data);
@@ -82,8 +82,12 @@ void SingleThreadedExecutor::execute_executable(AnyExecutable any_exec, std::sha
     }
     else
     {
-      assert(message);
-      assert(message_info);
+			if (strcmp("/parameter_events", any_exec.subscription->get_topic_name()))
+			{
+				assert(message);
+				assert(message_info);
+			}
+			std::cout << "Execute subscriber to topic: " << any_exec.subscription->get_topic_name() << std::endl;
       any_exec.subscription->handle_message(message, *message_info);
       any_exec.subscription->return_message(message);
       delete message_info;
@@ -162,6 +166,7 @@ bool SingleThreadedExecutor::get_next_ready_executable_from_map(
     rclcpp::CallbackGroup::WeakPtr weak_group_ptr = any_executable.callback_group;
     auto iter = weak_groups_to_nodes.find(weak_group_ptr);
     if (iter == weak_groups_to_nodes.end()) {
+			std::cout << "Couldn't find the callback group" << std::endl;
       success = false;
     }
   }
@@ -197,14 +202,17 @@ inline rclcpp::sched::SchedAttr* SingleThreadedExecutor::get_sched_attr(const An
   if (any_exec.client != nullptr) {
     return &(any_exec.client->sched_attr);
   }
+  if (any_exec.waitable != nullptr) {
+    return &(any_exec.waitable->sched_attr);
+  }
   // this will never happen.
   assert(false);
   return nullptr;
 }
 
-static bool take_message(rclcpp::AnyExecutable& any_exec, std::shared_ptr<void>& message, rclcpp::MessageInfo* message_info)
+static bool take_message(rclcpp::AnyExecutable& any_exec, std::shared_ptr<void>& message, rclcpp::MessageInfo** message_info_ptr)
 {
-	message_info = new rclcpp::MessageInfo;
+	rclcpp::MessageInfo* message_info = new rclcpp::MessageInfo;
 	message_info->get_rmw_message_info().from_intra_process = false;
 	message = any_exec.subscription->create_message();
 	assert(message);
@@ -231,8 +239,16 @@ static bool take_message(rclcpp::AnyExecutable& any_exec, std::shared_ptr<void>&
 		// No point spinning off a thread that won't have anything to work on
 		any_exec.subscription->return_message(message);
 		delete message_info;
+		message_info = nullptr;
 	}
 
+	if (taken)
+	{
+		assert(message_info);
+		assert(message.get() != nullptr);
+	}
+
+	*message_info_ptr = message_info;
 	return taken;
 }
 
@@ -242,8 +258,11 @@ inline void SingleThreadedExecutor::create_thread(AnyExecutable any_exec, std::s
      underlying syscalls. */
 
   const std::string nodeName = any_exec.node_base->get_name();
-	assert(message.get() != nullptr);
-	assert(message_info != nullptr);
+	if (any_exec.subscription)
+	{
+		assert(message.get() != nullptr);
+		assert(message_info != nullptr);
+	}
 
   try
   {
@@ -269,11 +288,14 @@ void SingleThreadedExecutor::assign_or_create(AnyExecutable any_exec) {
 
 	if (any_exec.subscription)
 	{
-		bool taken = take_message(any_exec, message, message_info);	
+		bool taken = take_message(any_exec, message, &message_info);	
+		assert(taken);
 		if (!taken)
 		{
 			return;
 		}
+		assert(message.get() != nullptr);
+		assert(message_info != nullptr);
 	}
 
   TRACEPOINT(rclcpp_idle_thread_stack_pop);
@@ -284,13 +306,39 @@ void SingleThreadedExecutor::assign_or_create(AnyExecutable any_exec) {
     return;
   }
   auto attr = get_sched_attr(any_exec);
+	if (any_exec.waitable)
+	{
+			RCLCPP_INFO(
+				rclcpp::get_logger("rclcpp"),
+				"In a waitable");
+	}
+		
   idle_thread->any_exec = std::move(any_exec);
 
 	idle_thread->message = message;
 	idle_thread->message_info = message_info;
 
   idle_thread->sched_attr = attr;
-  sched::syscall_sched_setattr(idle_thread->pid, attr);
+  int res = sched::syscall_sched_setattr(idle_thread->pid, attr);
+	assert(res == 0);
+	if (attr->sched_priority == 99)
+	{
+		if (any_exec.subscription)
+		{
+			RCLCPP_ERROR(
+				rclcpp::get_logger("rclcpp"),
+				"Error: Node %s is trying to run a subscription CB from topic %s with priority 99",
+				any_exec.node_base->get_name(),
+				any_exec.subscription->get_topic_name());
+		}
+		else
+		{
+			RCLCPP_ERROR(
+				rclcpp::get_logger("rclcpp"),
+				"Error: Node %s is trying to run a non-subscription CB with priority 99",
+				any_exec.node_base->get_name());
+		}
+	}
   TRACEPOINT(rclcpp_wake_worker_thread, idle_thread->pid);
   idle_thread->is_busy.set_val(1, true);
 }
@@ -311,6 +359,16 @@ SingleThreadedExecutor::spin() {
   int period_ns;
   char* method = getenv("ROS_SCHED_METHOD");
   char* period_str = getenv("ROS_SCHED_PERIOD");
+	
+	for (int i = 0; i < 50; i++)
+	{
+		AnyExecutable executable;
+		bool success = get_next_executable(executable);
+		if (success)
+		{
+			execute_any_executable(executable);
+		}	
+	}
   if (period_str == nullptr) {
     period_ns = DEFAULT_INTERVAL;
   } else {
@@ -414,14 +472,40 @@ SingleThreadedExecutor::spin_sleep(int period_ns)
   int err = 0;
   assert(clock_gettime(CLOCK_MONOTONIC, &period_point) == 0);
   inc_period(period_point, period_ns);
+	//next_time(period_ns, period_point);
 
+	struct timespec wake_time_actual;
+	wake_time_actual.tv_sec = 9;
+	wake_time_actual.tv_nsec = 9;
   while (rclcpp::ok(this->context_) && spinning.load()) {
 
     // Sleep until next period
-    while((err = clock_nanosleep(CLOCK_MONOTONIC, flags, &period_point, NULL)) && errno == EINTR);
-    assert(err == 0);
+    //while((err = clock_nanosleep(CLOCK_MONOTONIC, flags, &period_point, NULL)) && errno == EINTR);
+    //assert(err == 0);
+		int err;
+		do {
+			// perform an absolute sleep until tsk->current_activation
+			err = clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &period_point, NULL);
+			// if err is nonzero, we might have woken up too early
+		} while (err != 0 && errno == EINTR);
+		assert(err == 0);
+
+		
+  	int r = clock_gettime(CLOCK_MONOTONIC, &wake_time_actual);
+		assert(r == 0);
+		//std::cout << "Wokeup at " << wake_time_actual.tv_sec * 1000'000'000 + wake_time_actual.tv_nsec << std::endl;
+
     this->schedule();
+
+  	r = clock_gettime(CLOCK_MONOTONIC, &period_point);
+		assert(r == 0);
+		struct timespec curr_time = period_point;
     inc_period(period_point, period_ns);
+
+		//std::cout << "Sleeping at " << curr_time.tv_sec * 1000'000'000 + curr_time.tv_nsec << "\n";
+		//std::cout << "Will wakeup at " << period_point.tv_sec * 1000'000'000 + period_point.tv_nsec << std::endl;
+
+		//next_time(period_ns, period_point);
 
     // while (true) {
     //   rclcpp::AnyExecutable executable;

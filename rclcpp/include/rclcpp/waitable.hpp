@@ -21,13 +21,14 @@
 
 #include "rclcpp/macros.hpp"
 #include "rclcpp/visibility_control.hpp"
+#include "rclcpp/sched_base.hpp"
 
 #include "rcl/wait.h"
 
 namespace rclcpp
 {
 
-class Waitable
+class Waitable : public sched::SchedBase
 {
 public:
   RCLCPP_SMART_PTR_DEFINITIONS_NOT_COPYABLE(Waitable)
