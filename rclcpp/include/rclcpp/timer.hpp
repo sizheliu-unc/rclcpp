@@ -29,6 +29,7 @@
 #include "rclcpp/function_traits.hpp"
 #include "rclcpp/macros.hpp"
 #include "rclcpp/rate.hpp"
+#include "rclcpp/sched_base.hpp"
 #include "rclcpp/utilities.hpp"
 #include "rclcpp/visibility_control.hpp"
 #include "tracetools/tracetools.h"
@@ -43,7 +44,7 @@
 namespace rclcpp
 {
 
-class TimerBase
+class TimerBase: public sched::SchedBase
 {
 public:
   RCLCPP_SMART_PTR_DEFINITIONS_NOT_COPYABLE(TimerBase)
