@@ -770,6 +770,7 @@ Executor::wait_for_work(std::chrono::nanoseconds timeout)
     throw_from_rcl_error(status, "rcl_wait() failed");
   }
 
+
   // check the null handles in the wait set and remove them from the handles in memory strategy
   // for callback-based entities
   std::lock_guard<std::mutex> guard(mutex_);

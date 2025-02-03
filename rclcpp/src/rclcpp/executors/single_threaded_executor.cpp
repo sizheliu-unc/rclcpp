@@ -39,6 +39,8 @@
 
 using rclcpp::executors::SingleThreadedExecutor;
 
+int trace_fd = -1;
+int marker_fd = -1;
 
 struct t_eventData {
     syncutil::Condition* signal_scheduler_ptr;
@@ -52,6 +54,38 @@ void handler(int sig, siginfo_t *si, void *uc) {
 }
 
 void
+SingleThreadedExecutor::thread_start_idle() {
+  TRACEPOINT(rclcpp_worker_thread_spawn);
+  rclcpp::executors::ThreadData thread_data;
+
+  thread_data.is_busy.set_val(0, false);
+  pthread_t self = pthread_self();
+  thread_data.pid = sched::get_pid(self);
+
+	rclcpp::sched::SchedAttr idle_sched_attr;
+	idle_sched_attr.sched_policy = SCHED_FIFO;
+	idle_sched_attr.sched_priority = 98;
+  thread_data.sched_attr = &idle_sched_attr;
+  syscall_sched_setattr(0, &idle_sched_attr);
+
+  this->idle_threads.push(&thread_data);
+
+  // RCLCPP_INFO(rclcpp::get_logger("rclcpp"), "Created idle worker thread");
+
+  while (true) {
+    TRACEPOINT(rclcpp_worker_thread_yield);
+    thread_data.is_busy.wait_on(0);
+    TRACEPOINT(rclcpp_worker_thread_resume);
+    this->execute_executable(thread_data.any_exec, thread_data.message, thread_data.message_info);
+    thread_data.is_busy.set_val(0, false);
+    TRACEPOINT(rclcpp_idle_thread_stack_push);
+    this->idle_threads.push(&thread_data);
+
+		syscall_sched_setattr(0, &idle_sched_attr);
+  }
+}
+
+void
 SingleThreadedExecutor::thread_start(AnyExecutable any_exec, std::shared_ptr<void>& message, rclcpp::MessageInfo* message_info, rclcpp::sched::SchedAttr* sched_attr) {
   TRACEPOINT(rclcpp_worker_thread_spawn);
   rclcpp::executors::ThreadData thread_data(std::move(any_exec));
@@ -62,6 +96,10 @@ SingleThreadedExecutor::thread_start(AnyExecutable any_exec, std::shared_ptr<voi
   pthread_t self = pthread_self();
   thread_data.pid = sched::get_pid(self);
   thread_data.sched_attr = sched_attr;
+
+	rclcpp::sched::SchedAttr temp_sched_attr;
+	temp_sched_attr.sched_policy = SCHED_FIFO;
+	temp_sched_attr.sched_priority = 98;
   while (true) {
     TRACEPOINT(rclcpp_worker_thread_yield);
     thread_data.is_busy.wait_on(0);
@@ -70,6 +108,8 @@ SingleThreadedExecutor::thread_start(AnyExecutable any_exec, std::shared_ptr<voi
     thread_data.is_busy.set_val(0, false);
     TRACEPOINT(rclcpp_idle_thread_stack_push);
     this->idle_threads.push(&thread_data);
+
+		syscall_sched_setattr(0, &temp_sched_attr);
   }
 }
 
@@ -87,7 +127,7 @@ void SingleThreadedExecutor::execute_executable(AnyExecutable any_exec, std::sha
 				assert(message);
 				assert(message_info);
 			}
-			std::cout << "Execute subscriber to topic: " << any_exec.subscription->get_topic_name() << std::endl;
+			//std::cout << "Execute subscriber to topic: " << any_exec.subscription->get_topic_name() << std::endl;
       any_exec.subscription->handle_message(message, *message_info);
       any_exec.subscription->return_message(message);
       delete message_info;
@@ -222,19 +262,19 @@ static bool take_message(rclcpp::AnyExecutable& any_exec, std::shared_ptr<void>&
 	try {
 		taken = any_exec.subscription->take_type_erased(message.get(), *message_info);
 	} catch (const rclcpp::exceptions::RCLError & rcl_error) {
-		RCLCPP_ERROR(
-			rclcpp::get_logger("rclcpp"),
-			"executor taking a message from topic '%s' unexpectedly failed: %s",
-			any_exec.subscription->get_topic_name(),
-			rcl_error.what());
+		// RCLCPP_ERROR(
+		// 	rclcpp::get_logger("rclcpp"),
+		// 	"executor taking a message from topic '%s' unexpectedly failed: %s",
+		// 	any_exec.subscription->get_topic_name(),
+		// 	rcl_error.what());
 	}
 
 	if (!taken)
 	{
-		RCLCPP_DEBUG(
-			rclcpp::get_logger("rclcpp"),
-			"executor taking a message from topic '%s' failed to take anything",
-			any_exec.subscription->get_topic_name());
+		// RCLCPP_DEBUG(
+		// 	rclcpp::get_logger("rclcpp"),
+		// 	"executor taking a message from topic '%s' failed to take anything",
+		// 	any_exec.subscription->get_topic_name());
 		
 		// No point spinning off a thread that won't have anything to work on
 		any_exec.subscription->return_message(message);
@@ -252,6 +292,11 @@ static bool take_message(rclcpp::AnyExecutable& any_exec, std::shared_ptr<void>&
 	return taken;
 }
 
+inline void SingleThreadedExecutor::create_idle_thread() {
+  std::thread new_thread(std::bind(&SingleThreadedExecutor::thread_start_idle, this));
+  new_thread.detach();
+}
+
 inline void SingleThreadedExecutor::create_thread(AnyExecutable any_exec, std::shared_ptr<void>& message, rclcpp::MessageInfo* message_info) {
   auto attr = get_sched_attr(any_exec);
   /* here we use std::thread instead of pthread to make it clean. They involve the same
@@ -266,6 +311,13 @@ inline void SingleThreadedExecutor::create_thread(AnyExecutable any_exec, std::s
 
   try
   {
+    //   RCLCPP_INFO(rclcpp::get_logger("rclcpp"),
+    //   "Assigning thread with sched_runtime=%llu, sched_deadline=%llu, sched_period=%llu",
+    //   attr->sched_runtime,
+    //   attr->sched_deadline,
+    //   attr->sched_period
+    // );
+
     std::thread new_thread(std::bind(&SingleThreadedExecutor::thread_start, this, std::move(any_exec), message, message_info, attr));
     sched::syscall_sched_setattr(sched::get_pid(new_thread.native_handle()), attr);
     new_thread.detach();
@@ -278,8 +330,6 @@ inline void SingleThreadedExecutor::create_thread(AnyExecutable any_exec, std::s
       std::cout << "Failed to create thread for node " << nodeName << std::endl;
   }
 }
-
-
 
 void SingleThreadedExecutor::assign_or_create(AnyExecutable any_exec) {
 
@@ -306,12 +356,14 @@ void SingleThreadedExecutor::assign_or_create(AnyExecutable any_exec) {
     return;
   }
   auto attr = get_sched_attr(any_exec);
-	if (any_exec.waitable)
-	{
-			RCLCPP_INFO(
-				rclcpp::get_logger("rclcpp"),
-				"In a waitable");
-	}
+	assert(attr != nullptr);
+	
+	// if (any_exec.waitable)
+	// {
+	// 		RCLCPP_INFO(
+	// 			rclcpp::get_logger("rclcpp"),
+	// 			"In a waitable");
+	// }
 		
   idle_thread->any_exec = std::move(any_exec);
 
@@ -319,26 +371,48 @@ void SingleThreadedExecutor::assign_or_create(AnyExecutable any_exec) {
 	idle_thread->message_info = message_info;
 
   idle_thread->sched_attr = attr;
+
+  // RCLCPP_INFO(rclcpp::get_logger("rclcpp"),
+  //   "Assigning thread with sched_runtime=%llu, sched_deadline=%llu, sched_period=%llu",
+  //   idle_thread->sched_attr->sched_runtime,
+  //   idle_thread->sched_attr->sched_deadline,
+  //   idle_thread->sched_attr->sched_period
+  // );
+
+  std::cout << "Assigning a thread (" << idle_thread->pid << ") sched_runtime = " << idle_thread->sched_attr->sched_runtime << " ns, sched_deadline = " << idle_thread->sched_attr->sched_deadline << " ns, sched_period = "
+    << idle_thread->sched_attr->sched_period << " ns" << " sched_prio = " << idle_thread->sched_attr->sched_priority << std::endl;
+
   int res = sched::syscall_sched_setattr(idle_thread->pid, attr);
-	assert(res == 0);
-	if (attr->sched_priority == 99)
+	if (res != 0)
 	{
-		if (any_exec.subscription)
-		{
+		perror("Error while setting idle thread's sched_attr: ");
 			RCLCPP_ERROR(
 				rclcpp::get_logger("rclcpp"),
-				"Error: Node %s is trying to run a subscription CB from topic %s with priority 99",
-				any_exec.node_base->get_name(),
-				any_exec.subscription->get_topic_name());
-		}
-		else
-		{
-			RCLCPP_ERROR(
-				rclcpp::get_logger("rclcpp"),
-				"Error: Node %s is trying to run a non-subscription CB with priority 99",
-				any_exec.node_base->get_name());
-		}
+				"Error: Tried setting idle thread (pid=%d) with sched_attr, but got return code %d",
+				idle_thread->pid,
+				res
+			);
 	}
+
+	assert(res == 0);
+	// if (attr->sched_priority == 99)
+	// {
+	// 	if (any_exec.subscription)
+	// 	{
+	// 		RCLCPP_ERROR(
+	// 			rclcpp::get_logger("rclcpp"),
+	// 			"Error: Node %s is trying to run a subscription CB from topic %s with priority 99",
+	// 			any_exec.node_base->get_name(),
+	// 			any_exec.subscription->get_topic_name());
+	// 	}
+	// 	else
+	// 	{
+	// 		RCLCPP_ERROR(
+	// 			rclcpp::get_logger("rclcpp"),
+	// 			"Error: Node %s is trying to run a non-subscription CB with priority 99",
+	// 			any_exec.node_base->get_name());
+	// 	}
+	// }
   TRACEPOINT(rclcpp_wake_worker_thread, idle_thread->pid);
   idle_thread->is_busy.set_val(1, true);
 }
@@ -369,6 +443,7 @@ SingleThreadedExecutor::spin() {
 			execute_any_executable(executable);
 		}	
 	}
+  std::cout << "Warmup complete" << std::endl;
   if (period_str == nullptr) {
     period_ns = DEFAULT_INTERVAL;
   } else {
@@ -520,11 +595,21 @@ SingleThreadedExecutor::spin_sleep(int period_ns)
 void
 SingleThreadedExecutor::spin_deadline(int period_ns)
 {
+  std::cout << "In spin_deadline" << std::endl;
+
+  for (int i = 0; i < 500; i++)
+  {
+    create_idle_thread();
+  }
+  
+
   sched::SchedAttr attr;
   attr.sched_policy = SCHED_DEADLINE;
+  attr.sched_priority = 0;
   attr.sched_period = period_ns;
   attr.sched_runtime = period_ns;
   attr.sched_deadline = period_ns;
+	attr.sched_flags |= 0x04;
   sched::syscall_sched_setattr(gettid(), &attr);
   while (rclcpp::ok(this->context_) && spinning.load()) {
     this->schedule();
@@ -533,11 +618,11 @@ SingleThreadedExecutor::spin_deadline(int period_ns)
 }
 
 void SingleThreadedExecutor::schedule() {
-  TRACEPOINT(rclcpp_schedule_start);
+  TRACEPOINT(rclcpp_schedule_entry);
   int num_cb_dispatched = 0;
   rclcpp::AnyExecutable executable;
   if (!get_next_executable(executable, std::chrono::nanoseconds::zero())) {
-    TRACEPOINT(rclcpp_schedule_end, 0);
+    TRACEPOINT(rclcpp_schedule_exit, 0);
     return;
   }
   
@@ -547,12 +632,12 @@ void SingleThreadedExecutor::schedule() {
   while (true) {
     rclcpp::AnyExecutable ready_executable;
     if (!get_next_ready_executable(ready_executable)) {
-      TRACEPOINT(rclcpp_schedule_end, num_cb_dispatched);
+      TRACEPOINT(rclcpp_schedule_exit, num_cb_dispatched);
       return;
     }
 
     assign_or_create(std::move(ready_executable));
     num_cb_dispatched++;
   }
-  TRACEPOINT(rclcpp_schedule_end, num_cb_dispatched);
+  TRACEPOINT(rclcpp_schedule_exit, num_cb_dispatched);
 }
