@@ -74,8 +74,12 @@ operator!=(const SchedAttr& lhs, const SchedAttr& rhs) {
 }
 
 inline long
-syscall_sched_setattr(pid_t pid, const SchedAttr* sched_attr) {
+syscall_sched_setattr(pid_t pid, SchedAttr* sched_attr) {
     /* flags are currently unused, may enable in the future */
+    if (sched_attr->sched_policy == SCHED_DEADLINE)
+    {
+        //sched_attr->sched_flags = 0x02;
+    }
     return syscall(SYS_sched_setattr, pid, sched_attr, 0);
 }
 

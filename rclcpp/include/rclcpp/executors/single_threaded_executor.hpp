@@ -47,6 +47,7 @@ struct ThreadData {
   sched::SchedAttr* sched_attr;
 	std::shared_ptr<void> message; 
 	rclcpp::MessageInfo* message_info;
+  ThreadData() = default;
   ThreadData(AnyExecutable any_exec): any_exec(std::move(any_exec)) {};
 };
 
@@ -96,8 +97,10 @@ private:
   syncutil::Condition signal_scheduler;
   void execute_executable(AnyExecutable any_exec, std::shared_ptr<void>& message, rclcpp::MessageInfo* message_info);
   void schedule();
+  void create_idle_thread();
   void create_thread(AnyExecutable any_exec, std::shared_ptr<void>& message, rclcpp::MessageInfo* message_info);
   void assign_or_create(AnyExecutable any_exec);
+  void thread_start_idle();
   void thread_start(AnyExecutable any_exec, std::shared_ptr<void>& message, rclcpp::MessageInfo* message_info, sched::SchedAttr* sched_attr);
   sched::SchedAttr* get_sched_attr(const AnyExecutable& any_exec);
 
