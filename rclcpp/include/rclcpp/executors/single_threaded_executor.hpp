@@ -22,6 +22,7 @@
 #include <memory>
 #include <signal.h>
 #include <vector>
+#include <pthread.h>
 
 #include "rclcpp/executor.hpp"
 #include "rclcpp/macros.hpp"
@@ -43,6 +44,7 @@ namespace executors
 struct ThreadData {
   syncutil::Condition is_busy;
   AnyExecutable any_exec;
+  pthread_t pthread_id;
   pid_t pid;
   sched::SchedAttr* sched_attr;
 	std::shared_ptr<void> message; 
