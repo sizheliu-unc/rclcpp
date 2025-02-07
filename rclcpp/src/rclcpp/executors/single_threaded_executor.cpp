@@ -60,6 +60,7 @@ SingleThreadedExecutor::thread_start_idle() {
 
   thread_data.is_busy.set_val(0, false);
   pthread_t self = pthread_self();
+  thread_data.pthread_id = self;
   thread_data.pid = sched::get_pid(self);
 
 	rclcpp::sched::SchedAttr idle_sched_attr;
@@ -94,12 +95,10 @@ SingleThreadedExecutor::thread_start(AnyExecutable any_exec, std::shared_ptr<voi
 
   thread_data.is_busy.set_val(1, false);
   pthread_t self = pthread_self();
+  thread_data.pthread_id = self;
   thread_data.pid = sched::get_pid(self);
   thread_data.sched_attr = sched_attr;
 
-	rclcpp::sched::SchedAttr temp_sched_attr;
-	temp_sched_attr.sched_policy = SCHED_FIFO;
-	temp_sched_attr.sched_priority = 98;
   while (true) {
     TRACEPOINT(rclcpp_worker_thread_yield);
     thread_data.is_busy.wait_on(0);
@@ -108,8 +107,6 @@ SingleThreadedExecutor::thread_start(AnyExecutable any_exec, std::shared_ptr<voi
     thread_data.is_busy.set_val(0, false);
     TRACEPOINT(rclcpp_idle_thread_stack_push);
     this->idle_threads.push(&thread_data);
-
-		syscall_sched_setattr(0, &temp_sched_attr);
   }
 }
 
@@ -250,6 +247,27 @@ inline rclcpp::sched::SchedAttr* SingleThreadedExecutor::get_sched_attr(const An
   return nullptr;
 }
 
+inline rclcpp::SchedBase* SingleThreadedExecutor::get_sched_entity(const AnyExecutable& any_exec) {
+  if (any_exec.subscription != nullptr) {
+    return any_exec.subscription;
+  }
+  if (any_exec.timer != nullptr ) {
+    return any_exec.timer;
+  }
+  if (any_exec.service != nullptr) {
+    return any_exec.service;
+  }
+  if (any_exec.client != nullptr) {
+    return any_exec.client;
+  }
+  if (any_exec.waitable != nullptr) {
+    return any_exec.waitable;
+  }
+  // this will never happen.
+  assert(false);
+  return nullptr;
+}
+
 static bool take_message(rclcpp::AnyExecutable& any_exec, std::shared_ptr<void>& message, rclcpp::MessageInfo** message_info_ptr)
 {
 	rclcpp::MessageInfo* message_info = new rclcpp::MessageInfo;
@@ -298,7 +316,9 @@ inline void SingleThreadedExecutor::create_idle_thread() {
 }
 
 inline void SingleThreadedExecutor::create_thread(AnyExecutable any_exec, std::shared_ptr<void>& message, rclcpp::MessageInfo* message_info) {
-  auto attr = get_sched_attr(any_exec);
+  // auto attr = get_sched_attr(any_exec);
+  auto sched_entity = get_sched_entity(any_exec);
+  auto attr = &(sched_entity->sched_attr);
   /* here we use std::thread instead of pthread to make it clean. They involve the same
      underlying syscalls. */
 
@@ -319,7 +339,11 @@ inline void SingleThreadedExecutor::create_thread(AnyExecutable any_exec, std::s
     // );
 
     std::thread new_thread(std::bind(&SingleThreadedExecutor::thread_start, this, std::move(any_exec), message, message_info, attr));
-    sched::syscall_sched_setattr(sched::get_pid(new_thread.native_handle()), attr);
+    if (sched_entity->edf_attr) {
+      sched::update_deadline(new_thread.native_handle(), sched_entity->edf_attr);
+    } else {
+      sched::syscall_sched_setattr(sched::get_pid(new_thread.native_handle()), attr);
+    }
     new_thread.detach();
   }
   catch(const std::system_error& e)
@@ -355,15 +379,9 @@ void SingleThreadedExecutor::assign_or_create(AnyExecutable any_exec) {
     create_thread(std::move(any_exec), message, message_info);
     return;
   }
-  auto attr = get_sched_attr(any_exec);
+  auto sched_entity = get_sched_entity(any_exec);
+  auto attr = &(sched_entity->sched_attr);
 	assert(attr != nullptr);
-	
-	// if (any_exec.waitable)
-	// {
-	// 		RCLCPP_INFO(
-	// 			rclcpp::get_logger("rclcpp"),
-	// 			"In a waitable");
-	// }
 		
   idle_thread->any_exec = std::move(any_exec);
 
@@ -372,17 +390,14 @@ void SingleThreadedExecutor::assign_or_create(AnyExecutable any_exec) {
 
   idle_thread->sched_attr = attr;
 
-  // RCLCPP_INFO(rclcpp::get_logger("rclcpp"),
-  //   "Assigning thread with sched_runtime=%llu, sched_deadline=%llu, sched_period=%llu",
-  //   idle_thread->sched_attr->sched_runtime,
-  //   idle_thread->sched_attr->sched_deadline,
-  //   idle_thread->sched_attr->sched_period
-  // );
-
   std::cout << "Assigning a thread (" << idle_thread->pid << ") sched_runtime = " << idle_thread->sched_attr->sched_runtime << " ns, sched_deadline = " << idle_thread->sched_attr->sched_deadline << " ns, sched_period = "
     << idle_thread->sched_attr->sched_period << " ns" << " sched_prio = " << idle_thread->sched_attr->sched_priority << std::endl;
-
-  int res = sched::syscall_sched_setattr(idle_thread->pid, attr);
+  if (sched_entity->edf_attr) {
+    sched::update_deadline(idle_thread->pthread_id, sched_entity->edf_attr);
+  } else {
+    int res = sched::syscall_sched_setattr(idle_thread->pid, attr);
+  }
+  
 	if (res != 0)
 	{
 		perror("Error while setting idle thread's sched_attr: ");

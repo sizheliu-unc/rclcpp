@@ -2,6 +2,7 @@
 
 #include <sched.h>
 #include <sys/syscall.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <stdint.h>
 #include <cstring>
@@ -41,8 +42,8 @@ struct SchedAttr {
 
     /* Utilization hints, unused for our purpose,
        may enable in the future*/
-    uint32_t sched_util_min=0;
-    uint32_t sched_util_max=0;
+    uint32_t sched_util_min = 0;
+    uint32_t sched_util_max = 0;
 };
 
 
@@ -83,6 +84,41 @@ syscall_sched_setattr(pid_t pid, SchedAttr* sched_attr) {
     return syscall(SYS_sched_setattr, pid, sched_attr, 0);
 }
 
+namespace {
+    const sched_param ext_param = {
+        .sched_priority = 0,
+    }
+    const char* FIFO_PATH = "/tmp/pure-edf";
+    struct EDF_attr_struct {
+        pid_t pid;
+        uint64_t abs_deadline;
+    };
+}
+
+class PureEDF {
+public:
+    static bool pure_edf_init() {
+        pure_edf_fd = open(FIFO_PATH, O_WRONLY);
+        return pure_edf_fd != -1;
+    }
+    static void pure_edf_deinit() {
+        close(pure_edf_fd);
+    }
+    uint64_t abs_deadline;
+private:
+    static int pure_edf_fd;
+}
+
+bool update_deadline(pthread_t pthread_id, PureEDF* edf_attr) {
+    EDF_attr_struct attr = {
+        .pid = get_pid(pthread_id),
+        .abs_deadline = edf_attr->abs_deadline,
+    };
+    ssize_t bytes_written = write(PureEDF::pure_edf_fd, &attr, sizeof(EDF_attr_struct));
+    pthread_setschedparam(pthread_id, 7, &ext_param);
+    return bytes_written > 0;
+}
+
 class SchedBase {
 friend class executors::SingleThreadedExecutor;
 public:
@@ -90,8 +126,14 @@ public:
     set_sched_attr(const SchedAttr& sched_attr) {
         this->sched_attr = sched_attr;
     }
+    void
+    set_edf_attr(const PureEDF* edf_attr) {
+        this->edf_attr = edf_attr;
+    }
+
 protected:
     SchedAttr sched_attr;
+    PureEDF* edf_attr;
 };
 
 }; // rclcpp::sched
