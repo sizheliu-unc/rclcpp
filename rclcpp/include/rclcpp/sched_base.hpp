@@ -1,5 +1,5 @@
-#pragma once
-
+#ifndef RCLCPP__SCHED_BASE_HPP_
+#define RCLCPP__SCHED_BASE_HPP_
 #include <sched.h>
 #include <sys/syscall.h>
 #include <fcntl.h>
@@ -9,6 +9,8 @@
 #include <pthread.h>
 #include <atomic>
 #include <iostream>
+
+#define FIFO_PATH "/tmp/pure-edf"
 
 #if defined(__x86_64__) || defined(_M_X64)
     #define PADDING_SIZE 90
@@ -77,23 +79,16 @@ operator!=(const SchedAttr& lhs, const SchedAttr& rhs) {
 inline long
 syscall_sched_setattr(pid_t pid, SchedAttr* sched_attr) {
     /* flags are currently unused, may enable in the future */
-    if (sched_attr->sched_policy == SCHED_DEADLINE)
-    {
-        //sched_attr->sched_flags = 0x02;
-    }
     return syscall(SYS_sched_setattr, pid, sched_attr, 0);
 }
 
 namespace {
-    const sched_param ext_param = {
-        .sched_priority = 0,
-    }
-    const char* FIFO_PATH = "/tmp/pure-edf";
     struct EDF_attr_struct {
         pid_t pid;
         uint64_t abs_deadline;
     };
 }
+
 
 class PureEDF {
 public:
@@ -105,19 +100,12 @@ public:
         close(pure_edf_fd);
     }
     uint64_t abs_deadline;
+    friend bool update_deadline(pthread_t pthread_id, PureEDF* edf_attr);
 private:
     static int pure_edf_fd;
-}
+};
 
-bool update_deadline(pthread_t pthread_id, PureEDF* edf_attr) {
-    EDF_attr_struct attr = {
-        .pid = get_pid(pthread_id),
-        .abs_deadline = edf_attr->abs_deadline,
-    };
-    ssize_t bytes_written = write(PureEDF::pure_edf_fd, &attr, sizeof(EDF_attr_struct));
-    pthread_setschedparam(pthread_id, 7, &ext_param);
-    return bytes_written > 0;
-}
+bool update_deadline(pthread_t pthread_id, PureEDF* edf_attr);
 
 class SchedBase {
 friend class executors::SingleThreadedExecutor;
@@ -127,11 +115,13 @@ public:
         this->sched_attr = sched_attr;
     }
     void
-    set_edf_attr(const PureEDF* edf_attr) {
+    set_edf_attr(PureEDF* edf_attr) {
         this->edf_attr = edf_attr;
     }
 
-protected:
+    uint64_t relative_deadline;
+    bool is_source = false;
+
     SchedAttr sched_attr;
     PureEDF* edf_attr;
 };
@@ -139,3 +129,4 @@ protected:
 }; // rclcpp::sched
 }; //rclcpp
 
+#endif
