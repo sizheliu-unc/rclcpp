@@ -55,7 +55,7 @@ void handler(int sig, siginfo_t *si, void *uc) {
 
 void
 SingleThreadedExecutor::thread_start_idle() {
-  TRACEPOINT(rclcpp_worker_thread_spawn);
+  // TRACEPOINT(rclcpp_worker_thread_spawn);
   rclcpp::executors::ThreadData thread_data;
 
   thread_data.is_busy.set_val(0, false);
@@ -74,12 +74,12 @@ SingleThreadedExecutor::thread_start_idle() {
   // RCLCPP_INFO(rclcpp::get_logger("rclcpp"), "Created idle worker thread");
 
   while (true) {
-    TRACEPOINT(rclcpp_worker_thread_yield);
+    // TRACEPOINT(rclcpp_worker_thread_yield);
     thread_data.is_busy.wait_on(0);
-    TRACEPOINT(rclcpp_worker_thread_resume);
+    // TRACEPOINT(rclcpp_worker_thread_resume);
     this->execute_executable(thread_data.any_exec, thread_data.message, thread_data.message_info);
     thread_data.is_busy.set_val(0, false);
-    TRACEPOINT(rclcpp_idle_thread_stack_push);
+    // TRACEPOINT(rclcpp_idle_thread_stack_push);
     this->idle_threads.push(&thread_data);
 
 		syscall_sched_setattr(0, &idle_sched_attr);
@@ -88,7 +88,7 @@ SingleThreadedExecutor::thread_start_idle() {
 
 void
 SingleThreadedExecutor::thread_start(AnyExecutable any_exec, std::shared_ptr<void>& message, rclcpp::MessageInfo* message_info, rclcpp::sched::SchedAttr* sched_attr) {
-  TRACEPOINT(rclcpp_worker_thread_spawn);
+  // TRACEPOINT(rclcpp_worker_thread_spawn);
   rclcpp::executors::ThreadData thread_data(std::move(any_exec));
 	thread_data.message = message;
 	thread_data.message_info = message_info;
@@ -100,12 +100,12 @@ SingleThreadedExecutor::thread_start(AnyExecutable any_exec, std::shared_ptr<voi
   thread_data.sched_attr = sched_attr;
 
   while (true) {
-    TRACEPOINT(rclcpp_worker_thread_yield);
+    // TRACEPOINT(rclcpp_worker_thread_yield);
     thread_data.is_busy.wait_on(0);
-    TRACEPOINT(rclcpp_worker_thread_resume);
+    // TRACEPOINT(rclcpp_worker_thread_resume);
     this->execute_executable(thread_data.any_exec, thread_data.message, thread_data.message_info);
     thread_data.is_busy.set_val(0, false);
-    TRACEPOINT(rclcpp_idle_thread_stack_push);
+    // TRACEPOINT(rclcpp_idle_thread_stack_push);
     this->idle_threads.push(&thread_data);
   }
 }
@@ -160,7 +160,7 @@ bool SingleThreadedExecutor::get_next_ready_executable_from_map(
   const rclcpp::memory_strategy::MemoryStrategy::WeakCallbackGroupsToNodesMap &
   weak_groups_to_nodes)
 {
-  TRACEPOINT(rclcpp_executor_get_next_ready);
+  // TRACEPOINT(rclcpp_executor_get_next_ready);
   bool success = false;
   std::lock_guard<std::mutex> guard{mutex_};
   // Check the timers to see if there are any that are ready
@@ -211,7 +211,7 @@ bool SingleThreadedExecutor::get_next_ready_executable_from_map(
   // if (success) {
   //   // If it is valid, check to see if the group is mutually exclusive or
   //   // not, then mark it accordingly ..Check if the callback_group belongs to this executor
-  //   if (any_executable.callback_group && any_executable.callback_group->type() == \
+  //   if (any_executable.callback_group && any_executable.callback_group->type() == 
   //     CallbackGroupType::MutuallyExclusive)
   //   {
   //     // It should not have been taken otherwise
@@ -247,21 +247,21 @@ inline rclcpp::sched::SchedAttr* SingleThreadedExecutor::get_sched_attr(const An
   return nullptr;
 }
 
-inline rclcpp::SchedBase* SingleThreadedExecutor::get_sched_entity(const AnyExecutable& any_exec) {
+inline rclcpp::sched::SchedBase* SingleThreadedExecutor::get_sched_entity(const AnyExecutable& any_exec) {
   if (any_exec.subscription != nullptr) {
-    return any_exec.subscription;
+    return any_exec.subscription.get();
   }
   if (any_exec.timer != nullptr ) {
-    return any_exec.timer;
+    return any_exec.timer.get();
   }
   if (any_exec.service != nullptr) {
-    return any_exec.service;
+    return any_exec.service.get();
   }
   if (any_exec.client != nullptr) {
-    return any_exec.client;
+    return any_exec.client.get();
   }
   if (any_exec.waitable != nullptr) {
-    return any_exec.waitable;
+    return any_exec.waitable.get();
   }
   // this will never happen.
   assert(false);
@@ -340,6 +340,12 @@ inline void SingleThreadedExecutor::create_thread(AnyExecutable any_exec, std::s
 
     std::thread new_thread(std::bind(&SingleThreadedExecutor::thread_start, this, std::move(any_exec), message, message_info, attr));
     if (sched_entity->edf_attr) {
+      if (sched_entity->is_source) {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        std::cout << "time in sec: " << now.tv_sec << std::endl;
+        sched_entity->edf_attr->abs_deadline = (uint64_t) now.tv_sec * SEC_IN_NSEC + now.tv_nsec + sched_entity->relative_deadline;
+      }
       sched::update_deadline(new_thread.native_handle(), sched_entity->edf_attr);
     } else {
       sched::syscall_sched_setattr(sched::get_pid(new_thread.native_handle()), attr);
@@ -359,7 +365,7 @@ void SingleThreadedExecutor::assign_or_create(AnyExecutable any_exec) {
 
 	std::shared_ptr<void> message(nullptr);
 	rclcpp::MessageInfo* message_info = nullptr;
-
+  printf("assign or create\n");
 	if (any_exec.subscription)
 	{
 		bool taken = take_message(any_exec, message, &message_info);	
@@ -372,10 +378,10 @@ void SingleThreadedExecutor::assign_or_create(AnyExecutable any_exec) {
 		assert(message_info != nullptr);
 	}
 
-  TRACEPOINT(rclcpp_idle_thread_stack_pop);
+  // TRACEPOINT(rclcpp_idle_thread_stack_pop);
   auto idle_thread = idle_threads.pop();
   if (idle_thread == nullptr) {
-    TRACEPOINT(rclcpp_create_worker_thread);
+    // TRACEPOINT(rclcpp_create_worker_thread);
     create_thread(std::move(any_exec), message, message_info);
     return;
   }
@@ -392,10 +398,18 @@ void SingleThreadedExecutor::assign_or_create(AnyExecutable any_exec) {
 
   std::cout << "Assigning a thread (" << idle_thread->pid << ") sched_runtime = " << idle_thread->sched_attr->sched_runtime << " ns, sched_deadline = " << idle_thread->sched_attr->sched_deadline << " ns, sched_period = "
     << idle_thread->sched_attr->sched_period << " ns" << " sched_prio = " << idle_thread->sched_attr->sched_priority << std::endl;
+  int res;
   if (sched_entity->edf_attr) {
-    sched::update_deadline(idle_thread->pthread_id, sched_entity->edf_attr);
+    if (sched_entity->is_source) {
+      struct timespec now;
+      clock_gettime(CLOCK_MONOTONIC, &now);
+      std::cout << "time in sec: " << now.tv_sec << std::endl;
+      sched_entity->edf_attr->abs_deadline = (uint64_t) now.tv_sec * SEC_IN_NSEC + now.tv_nsec + sched_entity->relative_deadline;
+    }
+    std::cout << "abs deadline is: " << sched_entity->edf_attr->abs_deadline << std::endl;
+    res = (sched::update_deadline(idle_thread->pthread_id, sched_entity->edf_attr) == false);
   } else {
-    int res = sched::syscall_sched_setattr(idle_thread->pid, attr);
+    res = sched::syscall_sched_setattr(idle_thread->pid, attr);
   }
   
 	if (res != 0)
@@ -428,7 +442,7 @@ void SingleThreadedExecutor::assign_or_create(AnyExecutable any_exec) {
 	// 			any_exec.node_base->get_name());
 	// 	}
 	// }
-  TRACEPOINT(rclcpp_wake_worker_thread, idle_thread->pid);
+  // TRACEPOINT(rclcpp_wake_worker_thread, idle_thread->pid);
   idle_thread->is_busy.set_val(1, true);
 }
 
@@ -441,6 +455,7 @@ SingleThreadedExecutor::~SingleThreadedExecutor() {}
 
 void
 SingleThreadedExecutor::spin() {
+  printf("Spinning\n");
   if (spinning.exchange(true)) {
     throw std::runtime_error("spin() called while already spinning");
   }
@@ -451,10 +466,12 @@ SingleThreadedExecutor::spin() {
 	
 	for (int i = 0; i < 50; i++)
 	{
+    printf("Warming up, iter: %d\n", i);
 		AnyExecutable executable;
-		bool success = get_next_executable(executable);
+		bool success = get_next_executable(executable, std::chrono::nanoseconds(500000));
 		if (success)
 		{
+      printf("success at iter: %d\n", i);
 			execute_any_executable(executable);
 		}	
 	}
@@ -583,7 +600,7 @@ SingleThreadedExecutor::spin_sleep(int period_ns)
 		
   	int r = clock_gettime(CLOCK_MONOTONIC, &wake_time_actual);
 		assert(r == 0);
-		//std::cout << "Wokeup at " << wake_time_actual.tv_sec * 1000'000'000 + wake_time_actual.tv_nsec << std::endl;
+		// std::cout << "Wokeup at " << wake_time_actual.tv_sec * 1000'000'000 + wake_time_actual.tv_nsec << std::endl;
 
     this->schedule();
 
@@ -633,11 +650,11 @@ SingleThreadedExecutor::spin_deadline(int period_ns)
 }
 
 void SingleThreadedExecutor::schedule() {
-  TRACEPOINT(rclcpp_schedule_entry);
+  // TRACEPOINT(rclcpp_schedule_entry);
   int num_cb_dispatched = 0;
   rclcpp::AnyExecutable executable;
   if (!get_next_executable(executable, std::chrono::nanoseconds::zero())) {
-    TRACEPOINT(rclcpp_schedule_exit, 0);
+    // TRACEPOINT(rclcpp_schedule_exit, 0);
     return;
   }
   
@@ -647,12 +664,12 @@ void SingleThreadedExecutor::schedule() {
   while (true) {
     rclcpp::AnyExecutable ready_executable;
     if (!get_next_ready_executable(ready_executable)) {
-      TRACEPOINT(rclcpp_schedule_exit, num_cb_dispatched);
+      // TRACEPOINT(rclcpp_schedule_exit, num_cb_dispatched);
       return;
     }
 
     assign_or_create(std::move(ready_executable));
     num_cb_dispatched++;
   }
-  TRACEPOINT(rclcpp_schedule_exit, num_cb_dispatched);
+  // TRACEPOINT(rclcpp_schedule_exit, num_cb_dispatched);
 }
