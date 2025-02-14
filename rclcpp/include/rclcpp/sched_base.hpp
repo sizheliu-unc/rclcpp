@@ -107,6 +107,12 @@ private:
 
 bool update_deadline(pthread_t pthread_id, PureEDF* edf_attr);
 
+struct edf_sched_entity {
+    uint64_t relative_deadline;
+    PureEDF* edf_attr = nullptr;
+    bool is_source = false;
+};
+
 class SchedBase {
 friend class executors::SingleThreadedExecutor;
 public:
@@ -116,14 +122,11 @@ public:
     }
     void
     set_edf_attr(PureEDF* edf_attr) {
-        this->edf_attr = edf_attr;
+        this->sched_entity.edf_attr = edf_attr;
     }
 
-    uint64_t relative_deadline;
-    bool is_source = false;
-
     SchedAttr sched_attr;
-    PureEDF* edf_attr;
+    edf_sched_entity sched_entity;
 };
 
 }; // rclcpp::sched

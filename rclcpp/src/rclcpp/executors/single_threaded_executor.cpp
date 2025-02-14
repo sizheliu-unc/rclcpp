@@ -41,6 +41,7 @@ using rclcpp::executors::SingleThreadedExecutor;
 
 int trace_fd = -1;
 int marker_fd = -1;
+cpu_set_t ext_cpuset;
 
 struct t_eventData {
     syncutil::Condition* signal_scheduler_ptr;
@@ -247,21 +248,21 @@ inline rclcpp::sched::SchedAttr* SingleThreadedExecutor::get_sched_attr(const An
   return nullptr;
 }
 
-inline rclcpp::sched::SchedBase* SingleThreadedExecutor::get_sched_entity(const AnyExecutable& any_exec) {
+inline rclcpp::sched::edf_sched_entity* SingleThreadedExecutor::get_sched_entity(const AnyExecutable& any_exec) {
   if (any_exec.subscription != nullptr) {
-    return any_exec.subscription.get();
+    return &(any_exec.subscription->sched_entity);
   }
   if (any_exec.timer != nullptr ) {
-    return any_exec.timer.get();
+    return &(any_exec.timer->sched_entity);
   }
   if (any_exec.service != nullptr) {
-    return any_exec.service.get();
+    return &(any_exec.service->sched_entity);
   }
   if (any_exec.client != nullptr) {
-    return any_exec.client.get();
+    return &(any_exec.client->sched_entity);
   }
   if (any_exec.waitable != nullptr) {
-    return any_exec.waitable.get();
+    return &(any_exec.waitable->sched_entity);
   }
   // this will never happen.
   assert(false);
@@ -318,7 +319,7 @@ inline void SingleThreadedExecutor::create_idle_thread() {
 inline void SingleThreadedExecutor::create_thread(AnyExecutable any_exec, std::shared_ptr<void>& message, rclcpp::MessageInfo* message_info) {
   // auto attr = get_sched_attr(any_exec);
   auto sched_entity = get_sched_entity(any_exec);
-  auto attr = &(sched_entity->sched_attr);
+  auto attr = get_sched_attr(any_exec);
   /* here we use std::thread instead of pthread to make it clean. They involve the same
      underlying syscalls. */
 
@@ -339,16 +340,25 @@ inline void SingleThreadedExecutor::create_thread(AnyExecutable any_exec, std::s
     // );
 
     std::thread new_thread(std::bind(&SingleThreadedExecutor::thread_start, this, std::move(any_exec), message, message_info, attr));
+    std::cout << "trying to set new deadline" << std::endl;
+    if (!sched_entity) {
+      std::cout << "this is not a sched entity" << std::endl;
+    }
     if (sched_entity->edf_attr) {
       if (sched_entity->is_source) {
+        std::cout << "this is a source" << std::endl;
         struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
         std::cout << "time in sec: " << now.tv_sec << std::endl;
         sched_entity->edf_attr->abs_deadline = (uint64_t) now.tv_sec * SEC_IN_NSEC + now.tv_nsec + sched_entity->relative_deadline;
       }
+      std::cout << "abs deadline is: " << sched_entity->edf_attr->abs_deadline << std::endl;
       sched::update_deadline(new_thread.native_handle(), sched_entity->edf_attr);
     } else {
       sched::syscall_sched_setattr(sched::get_pid(new_thread.native_handle()), attr);
+    }
+    if (sched_setaffinity(new_thread.native_handle(), sizeof(cpu_set_t), &ext_cpuset) == -1) {
+      std::cerr << "Error setting CPU affinity: " << strerror(errno) << std::endl;
     }
     new_thread.detach();
   }
@@ -381,12 +391,11 @@ void SingleThreadedExecutor::assign_or_create(AnyExecutable any_exec) {
   // TRACEPOINT(rclcpp_idle_thread_stack_pop);
   auto idle_thread = idle_threads.pop();
   if (idle_thread == nullptr) {
-    // TRACEPOINT(rclcpp_create_worker_thread);
     create_thread(std::move(any_exec), message, message_info);
     return;
   }
   auto sched_entity = get_sched_entity(any_exec);
-  auto attr = &(sched_entity->sched_attr);
+  auto attr = get_sched_attr(any_exec);
 	assert(attr != nullptr);
 		
   idle_thread->any_exec = std::move(any_exec);
@@ -395,12 +404,14 @@ void SingleThreadedExecutor::assign_or_create(AnyExecutable any_exec) {
 	idle_thread->message_info = message_info;
 
   idle_thread->sched_attr = attr;
-
-  std::cout << "Assigning a thread (" << idle_thread->pid << ") sched_runtime = " << idle_thread->sched_attr->sched_runtime << " ns, sched_deadline = " << idle_thread->sched_attr->sched_deadline << " ns, sched_period = "
-    << idle_thread->sched_attr->sched_period << " ns" << " sched_prio = " << idle_thread->sched_attr->sched_priority << std::endl;
-  int res;
+  int res = 0;
+  std::cout << "trying to set new deadline" << std::endl;
+  if (!sched_entity) {
+    std::cout << "this is not a sched entity" << std::endl;
+  }
   if (sched_entity->edf_attr) {
     if (sched_entity->is_source) {
+      std::cout << "this is a source" << std::endl;
       struct timespec now;
       clock_gettime(CLOCK_MONOTONIC, &now);
       std::cout << "time in sec: " << now.tv_sec << std::endl;
@@ -459,6 +470,15 @@ SingleThreadedExecutor::spin() {
   if (spinning.exchange(true)) {
     throw std::runtime_error("spin() called while already spinning");
   }
+  CPU_ZERO(&ext_cpuset);
+  CPU_SET(8, &ext_cpuset);
+  CPU_SET(10, &ext_cpuset);
+  char* core_count = getenv("ROS_CORE_COUNT")
+  if (!core_count || atoi(core_count) != 2) {
+    CPU_SET(12, &ext_cpuset);
+    CPU_SET(14, &ext_cpuset);
+  }
+
   RCPPUTILS_SCOPE_EXIT(this->spinning.store(false); );
   int period_ns;
   char* method = getenv("ROS_SCHED_METHOD");
