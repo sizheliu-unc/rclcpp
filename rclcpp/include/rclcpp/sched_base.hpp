@@ -116,18 +116,21 @@ struct edf_sched_entity {
 class SchedBase {
 friend class executors::SingleThreadedExecutor;
 public:
-    void
-    set_sched_attr(const SchedAttr& sched_attr) {
-        this->sched_attr = sched_attr;
-    }
-    void
-    set_edf_attr(PureEDF* edf_attr) {
-        this->sched_entity.edf_attr = edf_attr;
-    }
+    virtual ~SchedBase() = default;
+    virtual void
+    set_sched_attr(const SchedAttr& sched_attr);
+
+    virtual void
+    set_edf_attr(PureEDF* edf_attr);
+
+    virtual void
+    set_edf_entity(const edf_sched_entity& sched_entity);
 
     SchedAttr sched_attr;
     edf_sched_entity sched_entity;
 };
+
+
 
 }; // rclcpp::sched
 }; //rclcpp

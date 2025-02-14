@@ -127,6 +127,15 @@ public:
   rclcpp::QoS
   get_actual_qos() const;
 
+  void
+  set_sched_attr(const sched::SchedAttr& sched_attr) override;
+  
+  void
+  set_edf_attr(sched::PureEDF* edf_attr) override;
+
+  void
+  set_edf_entity(const sched::edf_sched_entity& sched_entity) override;
+
   /// Take the next inter-process message from the subscription as a type erased pointer.
   /**
    * \sa Subscription::take() for details on how this function works.
