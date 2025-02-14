@@ -17,7 +17,19 @@ bool update_deadline(pthread_t pthread_id, PureEDF* edf_attr) {
     pthread_setschedparam(pthread_id, 7, &ext_param);
     return bytes_written > 0;
 }
+void
+SchedBase::set_sched_attr(const SchedAttr& sched_attr) {
+    this->sched_attr = sched_attr;
+}
+void
+SchedBase::set_edf_attr(PureEDF* edf_attr) {
+    this->sched_entity.edf_attr = edf_attr;
+}
 
+void
+SchedBase::set_edf_entity(const edf_sched_entity& sched_entity) {
+    this->sched_entity = sched_entity;
+}
 };
 };
 
