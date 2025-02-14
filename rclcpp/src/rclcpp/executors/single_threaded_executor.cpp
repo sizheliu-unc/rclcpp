@@ -357,7 +357,7 @@ inline void SingleThreadedExecutor::create_thread(AnyExecutable any_exec, std::s
     } else {
       sched::syscall_sched_setattr(sched::get_pid(new_thread.native_handle()), attr);
     }
-    if (sched_setaffinity(new_thread.native_handle(), sizeof(cpu_set_t), &ext_cpuset) == -1) {
+    if (sched_setaffinity(sched::get_pid(new_thread.native_handle()), sizeof(cpu_set_t), &ext_cpuset) == -1) {
       std::cerr << "Error setting CPU affinity: " << strerror(errno) << std::endl;
     }
     new_thread.detach();
@@ -473,7 +473,7 @@ SingleThreadedExecutor::spin() {
   CPU_ZERO(&ext_cpuset);
   CPU_SET(8, &ext_cpuset);
   CPU_SET(10, &ext_cpuset);
-  char* core_count = getenv("ROS_CORE_COUNT")
+  char* core_count = getenv("ROS_CORE_COUNT");
   if (!core_count || atoi(core_count) != 2) {
     CPU_SET(12, &ext_cpuset);
     CPU_SET(14, &ext_cpuset);
