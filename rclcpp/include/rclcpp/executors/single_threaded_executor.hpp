@@ -105,7 +105,7 @@ private:
   void thread_start_idle();
   void thread_start(AnyExecutable any_exec, std::shared_ptr<void>& message, rclcpp::MessageInfo* message_info, sched::SchedAttr* sched_attr);
   sched::SchedAttr* get_sched_attr(const AnyExecutable& any_exec);
-  sched::SchedBase* get_sched_entity(const AnyExecutable& any_exec);
+  sched::edf_sched_entity* get_sched_entity(const AnyExecutable& any_exec);
 
 };
 
