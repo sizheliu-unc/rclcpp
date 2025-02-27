@@ -340,25 +340,30 @@ inline void SingleThreadedExecutor::create_thread(AnyExecutable any_exec, std::s
     // );
 
     std::thread new_thread(std::bind(&SingleThreadedExecutor::thread_start, this, std::move(any_exec), message, message_info, attr));
-    std::cout << "trying to set new deadline" << std::endl;
+
+
+    if (sched_setaffinity(sched::get_pid(new_thread.native_handle()), sizeof(cpu_set_t), &ext_cpuset) == -1) {
+      std::cerr << "Error setting CPU affinity: " << strerror(errno) << std::endl;
+    }
+
+
+
+    //std::cout << "trying to set new deadline" << std::endl;
     if (!sched_entity) {
-      std::cout << "this is not a sched entity" << std::endl;
+      //std::cout << "this is not a sched entity" << std::endl;
     }
     if (sched_entity->edf_attr) {
       if (sched_entity->is_source) {
-        std::cout << "this is a source" << std::endl;
+        //std::cout << "this is a source" << std::endl;
         struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
-        std::cout << "time in sec: " << now.tv_sec << std::endl;
+        //std::cout << "time in sec: " << now.tv_sec << std::endl;
         sched_entity->edf_attr->abs_deadline = (uint64_t) now.tv_sec * SEC_IN_NSEC + now.tv_nsec + sched_entity->relative_deadline;
       }
-      std::cout << "abs deadline is: " << sched_entity->edf_attr->abs_deadline << std::endl;
+      //std::cout << "abs deadline is: " << sched_entity->edf_attr->abs_deadline << std::endl;
       sched::update_deadline(new_thread.native_handle(), sched_entity->edf_attr);
     } else {
       sched::syscall_sched_setattr(sched::get_pid(new_thread.native_handle()), attr);
-    }
-    if (sched_setaffinity(sched::get_pid(new_thread.native_handle()), sizeof(cpu_set_t), &ext_cpuset) == -1) {
-      std::cerr << "Error setting CPU affinity: " << strerror(errno) << std::endl;
     }
     new_thread.detach();
   }
@@ -375,7 +380,7 @@ void SingleThreadedExecutor::assign_or_create(AnyExecutable any_exec) {
 
 	std::shared_ptr<void> message(nullptr);
 	rclcpp::MessageInfo* message_info = nullptr;
-  printf("assign or create\n");
+  //printf("assign or create\n");
 	if (any_exec.subscription)
 	{
 		bool taken = take_message(any_exec, message, &message_info);	
@@ -405,19 +410,19 @@ void SingleThreadedExecutor::assign_or_create(AnyExecutable any_exec) {
 
   idle_thread->sched_attr = attr;
   int res = 0;
-  std::cout << "trying to set new deadline" << std::endl;
+  //std::cout << "trying to set new deadline" << std::endl;
   if (!sched_entity) {
-    std::cout << "this is not a sched entity" << std::endl;
+    //std::cout << "this is not a sched entity" << std::endl;
   }
   if (sched_entity->edf_attr) {
     if (sched_entity->is_source) {
-      std::cout << "this is a source" << std::endl;
+      //std::cout << "this is a source" << std::endl;
       struct timespec now;
       clock_gettime(CLOCK_MONOTONIC, &now);
-      std::cout << "time in sec: " << now.tv_sec << std::endl;
+      //std::cout << "time in sec: " << now.tv_sec << std::endl;
       sched_entity->edf_attr->abs_deadline = (uint64_t) now.tv_sec * SEC_IN_NSEC + now.tv_nsec + sched_entity->relative_deadline;
     }
-    std::cout << "abs deadline is: " << sched_entity->edf_attr->abs_deadline << std::endl;
+    //std::cout << "abs deadline is: " << sched_entity->edf_attr->abs_deadline << std::endl;
     res = (sched::update_deadline(idle_thread->pthread_id, sched_entity->edf_attr) == false);
   } else {
     res = sched::syscall_sched_setattr(idle_thread->pid, attr);
@@ -471,13 +476,17 @@ SingleThreadedExecutor::spin() {
     throw std::runtime_error("spin() called while already spinning");
   }
   CPU_ZERO(&ext_cpuset);
-  CPU_SET(8, &ext_cpuset);
   CPU_SET(10, &ext_cpuset);
+  CPU_SET(11, &ext_cpuset);
+  CPU_SET(12, &ext_cpuset);
+  CPU_SET(13, &ext_cpuset);
   char* core_count = getenv("ROS_CORE_COUNT");
+/*
   if (!core_count || atoi(core_count) != 2) {
+    CPU_SET(11, &ext_cpuset);
     CPU_SET(12, &ext_cpuset);
-    CPU_SET(14, &ext_cpuset);
   }
+*/
 
   RCPPUTILS_SCOPE_EXIT(this->spinning.store(false); );
   int period_ns;

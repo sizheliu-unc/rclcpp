@@ -11,6 +11,7 @@
 #include <iostream>
 
 #define FIFO_PATH "/tmp/pure-edf"
+#define ACK_PATH "/tmp/pure-edf-ack"
 
 #if defined(__x86_64__) || defined(_M_X64)
     #define PADDING_SIZE 90
@@ -94,7 +95,8 @@ class PureEDF {
 public:
     static bool pure_edf_init() {
         pure_edf_fd = open(FIFO_PATH, O_WRONLY);
-        return pure_edf_fd != -1;
+	pure_edf_ack_fd = open(ACK_PATH, O_RDONLY);
+        return pure_edf_fd != -1 && pure_edf_ack_fd != -1;
     }
     static void pure_edf_deinit() {
         close(pure_edf_fd);
@@ -103,6 +105,7 @@ public:
     friend bool update_deadline(pthread_t pthread_id, PureEDF* edf_attr);
 private:
     static int pure_edf_fd;
+    static int pure_edf_ack_fd;
 };
 
 bool update_deadline(pthread_t pthread_id, PureEDF* edf_attr);
