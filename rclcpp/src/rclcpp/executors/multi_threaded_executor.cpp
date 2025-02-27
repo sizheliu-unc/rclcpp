@@ -25,6 +25,33 @@
 
 using rclcpp::executors::MultiThreadedExecutor;
 
+static int set_main_thread_sched_params()
+{
+    // Set CPU affinity to core 9
+    cpu_set_t mask;
+    CPU_ZERO(&mask);
+    CPU_SET(9, &mask);
+    //CPU_SET(10, &mask);
+    //CPU_SET(11, &mask);
+    //CPU_SET(12, &mask);
+
+    if (sched_setaffinity(0, sizeof(mask), &mask) == -1) {
+        perror("sched_setaffinity failed");
+        return 1;
+    }
+
+    // Set scheduling policy to SCHED_FIFO with priority 99
+    struct sched_param param;
+    param.sched_priority = 99;
+
+    if (sched_setscheduler(0, SCHED_FIFO, &param) == -1) {
+        perror("sched_setscheduler failed");
+        return 1;
+    }
+
+    return 0;
+}
+
 MultiThreadedExecutor::MultiThreadedExecutor(
   const rclcpp::ExecutorOptions & options,
   size_t number_of_threads,
@@ -53,13 +80,13 @@ MultiThreadedExecutor::spin()
   size_t thread_id = 0;
   {
     std::lock_guard wait_lock{wait_mutex_};
-    for (; thread_id < number_of_threads_ - 1; ++thread_id) {
+    for (; thread_id < number_of_threads_; ++thread_id) {
       auto func = std::bind(&MultiThreadedExecutor::run, this, thread_id);
       threads.emplace_back(func);
     }
   }
-
-  run(thread_id);
+  set_main_thread_sched_params();
+  //run(thread_id);
   for (auto & thread : threads) {
     thread.join();
   }
