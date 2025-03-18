@@ -41,16 +41,63 @@ namespace rclcpp
 namespace executors
 {
 
+struct SubscriptionHandlerInputs {
+  struct {
+    std::shared_ptr<SerializedMessage> serializedMessage;
+    void* loanedMessage;
+    std::shared_ptr<void> copiedMessage;
+  } message;
+
+  rclcpp::MessageInfo messageInfo;
+};
+
+struct ServiceHandlerInputs {
+  std::shared_ptr<void> request;
+  std::shared_ptr<rmw_request_id_t> requestHeader;
+};
+
+struct ClientHandlerInputs {
+  std::shared_ptr<void> response;
+  std::shared_ptr<rmw_request_id_t> requestHeader;
+};
+
+struct CallbackInputs {
+  SubscriptionHandlerInputs subscriptionInput;
+  ServiceHandlerInputs serviceInput;
+  ClientHandlerInputs clientInput;
+};
+
 struct ThreadData {
   syncutil::Condition is_busy;
   AnyExecutable any_exec;
   pthread_t pthread_id;
   pid_t pid;
+  uint32_t worker_id;
   sched::SchedAttr* sched_attr;
-	std::shared_ptr<void> message; 
-	rclcpp::MessageInfo* message_info;
-  ThreadData() = default;
-  ThreadData(AnyExecutable any_exec): any_exec(std::move(any_exec)) {};
+  static sched::SchedAttr idle_sched_attr;
+	CallbackInputs callbackInputs;
+
+  ThreadData(uint32_t worker_id)
+  {
+    this->worker_id = worker_id;
+    is_busy.set_val(0, false);
+    const pthread_t self = pthread_self();
+    pthread_id = self;
+    pid = sched::get_pid(self);
+    sched_attr = &idle_sched_attr;
+    syscall_sched_setattr(0, &ThreadData::idle_sched_attr);
+  }
+
+  ThreadData(AnyExecutable any_exec, CallbackInputs callbackInputs, rclcpp::sched::SchedAttr* input_sched_attr)
+    : any_exec(std::move(any_exec)), callbackInputs(std::move(callbackInputs), uint32_t worker_id) 
+  {
+    this->worker_id = worker_id;
+    is_busy.set_val(1, false);
+    const pthread_t self = pthread_self();
+    pthread_id = self;
+    pid = sched::get_pid(self);
+    sched_attr = input_sched_attr;
+  }
 };
 
 /// Single-threaded executor implementation.
@@ -65,11 +112,13 @@ public:
   /// Default constructor. See the default constructor for Executor.
   RCLCPP_PUBLIC
   explicit SingleThreadedExecutor(
-    const rclcpp::ExecutorOptions & options = rclcpp::ExecutorOptions());
+    const rclcpp::ExecutorOptions & options = rclcpp::ExecutorOptions(),
+    const int worker_pool_size = 500
+  );
 
   /// Default destructor.
   RCLCPP_PUBLIC
-  virtual ~SingleThreadedExecutor();
+  virtual ~SingleThreadedExecutor() {}
 
   /// Single-threaded implementation of spin.
   /**
@@ -91,22 +140,26 @@ public:
 		const rclcpp::memory_strategy::MemoryStrategy::WeakCallbackGroupsToNodesMap &
 		weak_groups_to_nodes) override;
 
+  RCLCPP_PUBLIC
+  void set_cpuset(const cpu_set_t new_cpuset);
+
 private:
   RCLCPP_DISABLE_COPY(SingleThreadedExecutor)
   void spin_timer(int period_ns);
   void spin_sleep(int period_ns);
-  void spin_deadline(int period_ns);
+  // void spin_deadline(int period_ns);
   syncutil::Condition signal_scheduler;
-  void execute_executable(AnyExecutable any_exec, std::shared_ptr<void>& message, rclcpp::MessageInfo* message_info);
+  cpu_set_t cpuset;
+  bool take_message(const AnyExecutable& any_exec, CallbackInputs& inputs);
+  void execute_executable(AnyExecutable any_exec, CallbackInputs callbackInputs);
   void schedule();
-  void create_idle_thread();
-  void create_thread(AnyExecutable any_exec, std::shared_ptr<void>& message, rclcpp::MessageInfo* message_info);
-  void assign_or_create(AnyExecutable any_exec);
-  void thread_start_idle();
-  void thread_start(AnyExecutable any_exec, std::shared_ptr<void>& message, rclcpp::MessageInfo* message_info, sched::SchedAttr* sched_attr);
-  sched::SchedAttr* get_sched_attr(const AnyExecutable& any_exec);
-  sched::edf_sched_entity* get_sched_entity(const AnyExecutable& any_exec);
-
+  void create_thread(const uint32_t worker_id);
+  void create_thread(const AnyExecutable any_exec, CallbackInputs data, const uint32_t worker_id);
+  void assign_thread(ThreadData* thread, AnyExecutable any_exec, CallbackInputs callbackInputs);
+  void dispatch(AnyExecutable any_exec);
+  void worker_thread_loop(rclcpp::executors::ThreadData& thread_data);
+  void worker_thread_func(const uint32_t worker_id);
+  void worker_thread_func(AnyExecutable any_exec, CallbackInputs callbackInputs, sched::SchedAttr* sched_attr, const uint32_t worker_id);
 };
 
 }  // namespace executors

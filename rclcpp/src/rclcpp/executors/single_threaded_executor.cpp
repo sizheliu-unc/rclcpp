@@ -37,11 +37,16 @@
 
 #define SEC_IN_NSEC 1'000'000'000
 
-using rclcpp::executors::SingleThreadedExecutor;
+//using rclcpp::executors::SingleThreadedExecutor;
 
-int trace_fd = -1;
-int marker_fd = -1;
-cpu_set_t ext_cpuset;
+namespace rclcpp
+{
+
+namespace executors
+{
+
+// Define and initialize the static member variable
+rclcpp::sched::SchedAttr rclcpp::executors::ThreadData::idle_sched_attr = {};
 
 struct t_eventData {
     syncutil::Condition* signal_scheduler_ptr;
@@ -50,110 +55,48 @@ struct t_eventData {
 void handler(int sig, siginfo_t *si, void *uc) {
   UNUSED(sig);
   UNUSED(uc);
-  t_eventData *data = (t_eventData *) si->_sifields._rt.si_sigval.sival_ptr;
+  t_eventData *data = (t_eventData *)si->_sifields._rt.si_sigval.sival_ptr;
   data->signal_scheduler_ptr->set_val(1, true);
 }
 
-void
-SingleThreadedExecutor::thread_start_idle() {
-  // TRACEPOINT(rclcpp_worker_thread_spawn);
-  rclcpp::executors::ThreadData thread_data;
+SingleThreadedExecutor::SingleThreadedExecutor(const rclcpp::ExecutorOptions & options, const int worker_pool_size)
+: rclcpp::Executor(options) 
+{
+  ThreadData::idle_sched_attr.sched_policy = SCHED_FIFO;
+  ThreadData::idle_sched_attr.sched_priority = 1;
 
-  thread_data.is_busy.set_val(0, false);
-  pthread_t self = pthread_self();
-  thread_data.pthread_id = self;
-  thread_data.pid = sched::get_pid(self);
+  CPU_ZERO(&(this->cpuset));
+  CPU_SET(10, &(this->cpuset));
+  CPU_SET(11, &(this->cpuset));
+  CPU_SET(12, &(this->cpuset));
+  CPU_SET(13, &(this->cpuset));
+  for (int i = 0; i < worker_pool_size; i++)
+  {
+    create_thread();
+  }
+}
 
-	rclcpp::sched::SchedAttr idle_sched_attr;
-	idle_sched_attr.sched_policy = SCHED_FIFO;
-	idle_sched_attr.sched_priority = 98;
-  thread_data.sched_attr = &idle_sched_attr;
-  syscall_sched_setattr(0, &idle_sched_attr);
+inline void SingleThreadedExecutor::worker_thread_loop(rclcpp::executors::ThreadData& thread_data) {
+  while (true) {
+    thread_data.is_busy.wait_on(0);
+    std::cout << "pthread " << thread_data.pthread_id << " executing executable 0x" << &(thread_data.any_exec) << std::endl;
+    this->execute_executable(thread_data.any_exec, thread_data.callbackInputs);
+    thread_data.is_busy.set_val(0, false);
+    this->idle_threads.push(&thread_data);
+    thread_data.sched_attr = nullptr;
+    syscall_sched_setattr(0, &ThreadData::idle_sched_attr);
+  }
+}
 
+void SingleThreadedExecutor::worker_thread_func(const uint32_t worker_id) {
+  rclcpp::executors::ThreadData thread_data(worker_id);
   this->idle_threads.push(&thread_data);
-
-  // RCLCPP_INFO(rclcpp::get_logger("rclcpp"), "Created idle worker thread");
-
-  while (true) {
-    // TRACEPOINT(rclcpp_worker_thread_yield);
-    thread_data.is_busy.wait_on(0);
-    // TRACEPOINT(rclcpp_worker_thread_resume);
-    this->execute_executable(thread_data.any_exec, thread_data.message, thread_data.message_info);
-    thread_data.is_busy.set_val(0, false);
-    // TRACEPOINT(rclcpp_idle_thread_stack_push);
-    this->idle_threads.push(&thread_data);
-
-		syscall_sched_setattr(0, &idle_sched_attr);
-  }
+  worker_thread_loop(thread_data);
 }
 
-void
-SingleThreadedExecutor::thread_start(AnyExecutable any_exec, std::shared_ptr<void>& message, rclcpp::MessageInfo* message_info, rclcpp::sched::SchedAttr* sched_attr) {
-  // TRACEPOINT(rclcpp_worker_thread_spawn);
-  rclcpp::executors::ThreadData thread_data(std::move(any_exec));
-	thread_data.message = message;
-	thread_data.message_info = message_info;
-
-  thread_data.is_busy.set_val(1, false);
-  pthread_t self = pthread_self();
-  thread_data.pthread_id = self;
-  thread_data.pid = sched::get_pid(self);
-  thread_data.sched_attr = sched_attr;
-
-  while (true) {
-    // TRACEPOINT(rclcpp_worker_thread_yield);
-    thread_data.is_busy.wait_on(0);
-    // TRACEPOINT(rclcpp_worker_thread_resume);
-    this->execute_executable(thread_data.any_exec, thread_data.message, thread_data.message_info);
-    thread_data.is_busy.set_val(0, false);
-    // TRACEPOINT(rclcpp_idle_thread_stack_push);
-    this->idle_threads.push(&thread_data);
-  }
-}
-
-void SingleThreadedExecutor::execute_executable(AnyExecutable any_exec, std::shared_ptr<void>& message, rclcpp::MessageInfo* message_info) {
-  if (any_exec.callback_group->type() == CallbackGroupType::MutuallyExclusive) {
-    any_exec.callback_group->callback_group_mutex.lock();
-    if (any_exec.subscription == nullptr)
-    {
-      execute_any_executable(any_exec);
-    }
-    else
-    {
-			if (strcmp("/parameter_events", any_exec.subscription->get_topic_name()))
-			{
-				assert(message);
-				assert(message_info);
-			}
-			//std::cout << "Execute subscriber to topic: " << any_exec.subscription->get_topic_name() << std::endl;
-      any_exec.subscription->handle_message(message, *message_info);
-      any_exec.subscription->return_message(message);
-      delete message_info;
-    }
-    any_exec.callback_group->callback_group_mutex.unlock();
-    any_exec.callback_group.reset();
-    return;
-  }
-
-
-  if (any_exec.subscription == nullptr)
-  {
-    execute_any_executable(any_exec);
-  }
-  else
-  {
-    assert(message);
-    assert(message_info);
-    any_exec.subscription->handle_message(message, *message_info);
-    any_exec.subscription->return_message(message);
-    delete message_info;
-  }
-
-  // Clear the callback_group to prevent the AnyExecutable destructor from
-  // resetting the callback group `can_be_taken_from`
-  any_exec.callback_group.reset();
-
-
+void SingleThreadedExecutor::worker_thread_func(AnyExecutable any_exec, CallbackInputs data, rclcpp::sched::SchedAttr* input_sched_attr, const uint32_t worker_id) {
+  rclcpp::executors::ThreadData thread_data(std::move(any_exec), std::move(data), input_sched_attr, worker_id);
+  worker_thread_loop(thread_data);
 }
 
 bool SingleThreadedExecutor::get_next_ready_executable_from_map(
@@ -227,131 +170,295 @@ bool SingleThreadedExecutor::get_next_ready_executable_from_map(
   return success;
 }
 
-inline rclcpp::sched::SchedAttr* SingleThreadedExecutor::get_sched_attr(const AnyExecutable& any_exec) {
-  if (any_exec.subscription != nullptr) {
+static inline rclcpp::sched::SchedAttr* get_sched_attr(const rclcpp::AnyExecutable& any_exec) {
+  assert(
+    any_exec.subscription
+    || any_exec.timer
+    || any_exec.service
+    || any_exec.client
+    || any_exec.waitable
+  );
+  if (any_exec.subscription) {
     return &(any_exec.subscription->sched_attr);
   }
-  if (any_exec.timer != nullptr ) {
+  if (any_exec.timer) {
     return &(any_exec.timer->sched_attr);
   }
-  if (any_exec.service != nullptr) {
+  if (any_exec.service) {
     return &(any_exec.service->sched_attr);
   }
-  if (any_exec.client != nullptr) {
+  if (any_exec.client) {
     return &(any_exec.client->sched_attr);
   }
-  if (any_exec.waitable != nullptr) {
+  if (any_exec.waitable) {
     return &(any_exec.waitable->sched_attr);
   }
-  // this will never happen.
+
   assert(false);
   return nullptr;
 }
 
-inline rclcpp::sched::edf_sched_entity* SingleThreadedExecutor::get_sched_entity(const AnyExecutable& any_exec) {
-  if (any_exec.subscription != nullptr) {
+static inline rclcpp::sched::edf_sched_entity* get_sched_entity(const rclcpp::AnyExecutable& any_exec) {
+  assert(
+    any_exec.subscription
+    || any_exec.timer
+    || any_exec.service
+    || any_exec.client
+    || any_exec.waitable
+  );
+  if (any_exec.subscription) {
     return &(any_exec.subscription->sched_entity);
   }
-  if (any_exec.timer != nullptr ) {
+  if (any_exec.timer) {
     return &(any_exec.timer->sched_entity);
   }
-  if (any_exec.service != nullptr) {
+  if (any_exec.service) {
     return &(any_exec.service->sched_entity);
   }
-  if (any_exec.client != nullptr) {
+  if (any_exec.client) {
     return &(any_exec.client->sched_entity);
   }
-  if (any_exec.waitable != nullptr) {
+  if (any_exec.waitable) {
     return &(any_exec.waitable->sched_entity);
   }
-  // this will never happen.
+
   assert(false);
   return nullptr;
 }
 
-static bool take_message(rclcpp::AnyExecutable& any_exec, std::shared_ptr<void>& message, rclcpp::MessageInfo** message_info_ptr)
-{
-	rclcpp::MessageInfo* message_info = new rclcpp::MessageInfo;
-	message_info->get_rmw_message_info().from_intra_process = false;
-	message = any_exec.subscription->create_message();
-	assert(message);
-	assert(message.get() != nullptr);
-	bool taken = false;
+static bool take_and_do_error_handling(const char *action_description,
+                                       const char *topic_or_service_name,
+                                       std::function<bool()> take_action) {
+  bool taken = false;
+  try {
+    taken = take_action();
+  } catch (const rclcpp::exceptions::RCLError &rcl_error) {
+    RCLCPP_ERROR(rclcpp::get_logger("rclcpp"),
+                 "executor %s '%s' unexpectedly failed: %s", action_description,
+                 topic_or_service_name, rcl_error.what());
+  }
+  if (!taken) {
+    // Message or Service was not taken for some reason.
+    // Note that this can be normal, if the underlying middleware needs to
+    // interrupt wait spuriously it is allowed.
+    // So in that case the executor cannot tell the difference in a
+    // spurious wake up and an entity actually having data until trying
+    // to take the data.
+    RCLCPP_DEBUG(rclcpp::get_logger("rclcpp"),
+                 "executor %s '%s' failed to take anything", action_description,
+                 topic_or_service_name);
+  }
 
-	try {
-		taken = any_exec.subscription->take_type_erased(message.get(), *message_info);
-	} catch (const rclcpp::exceptions::RCLError & rcl_error) {
-		// RCLCPP_ERROR(
-		// 	rclcpp::get_logger("rclcpp"),
-		// 	"executor taking a message from topic '%s' unexpectedly failed: %s",
-		// 	any_exec.subscription->get_topic_name(),
-		// 	rcl_error.what());
-	}
-
-	if (!taken)
-	{
-		// RCLCPP_DEBUG(
-		// 	rclcpp::get_logger("rclcpp"),
-		// 	"executor taking a message from topic '%s' failed to take anything",
-		// 	any_exec.subscription->get_topic_name());
-		
-		// No point spinning off a thread that won't have anything to work on
-		any_exec.subscription->return_message(message);
-		delete message_info;
-		message_info = nullptr;
-	}
-
-	if (taken)
-	{
-		assert(message_info);
-		assert(message.get() != nullptr);
-	}
-
-	*message_info_ptr = message_info;
-	return taken;
+  return taken;
 }
 
-inline void SingleThreadedExecutor::create_idle_thread() {
-  std::thread new_thread(std::bind(&SingleThreadedExecutor::thread_start_idle, this));
+static bool take_subscription(rclcpp::SubscriptionBase::SharedPtr subscription, rclcpp::executors::SubscriptionHandlerInputs &data) 
+{
+  data.messageInfo.get_rmw_message_info().from_intra_process = false;
+
+  bool taken = false;
+
+  // This is the case where a copy of the serialized message is taken from
+  // the middleware via inter-process communication.
+  if (subscription->is_serialized()) 
+  {
+    data.message.serializedMessage = subscription->create_serialized_message();
+    taken = take_and_do_error_handling(
+        "taking a serialized message from topic",
+        subscription->get_topic_name(),
+        [&]() {
+          return subscription->take_serialized(
+              *(data.message.serializedMessage.get()), data.messageInfo);
+        }
+    );
+  }
+
+  // This is the case where a loaned message is taken from the middleware via
+  // inter-process communication, given to the user for their callback,
+  // and then returned.
+  else if (subscription->can_loan_messages()) 
+  {
+    data.message.loanedMessage = nullptr;
+
+    taken = take_and_do_error_handling(
+        "taking a loaned message from topic", subscription->get_topic_name(),
+        [&]() {
+          rcl_ret_t ret = rcl_take_loaned_message(
+              subscription->get_subscription_handle().get(),
+              &(data.message.loanedMessage),
+              &(data.messageInfo.get_rmw_message_info()), nullptr);
+          if (RCL_RET_SUBSCRIPTION_TAKE_FAILED == ret) {
+            return false;
+          } else if (RCL_RET_OK != ret) {
+            rclcpp::exceptions::throw_from_rcl_error(ret);
+          }
+          return true;
+        }
+      );
+  }
+
+  // This case is taking a copy of the message data from the middleware via
+  // inter-process communication.
+  else 
+  {
+    data.message.copiedMessage = subscription->create_message();
+
+    taken = take_and_do_error_handling(
+        "taking a message from topic", subscription->get_topic_name(),
+        [&]() {
+          return subscription->take_type_erased(
+              data.message.copiedMessage.get(), data.messageInfo);
+        }
+      );
+  }
+
+  return taken;
+}
+
+static void exec_subscription(rclcpp::SubscriptionBase::SharedPtr subscription, rclcpp::executors::SubscriptionHandlerInputs &data) 
+{
+  int not_param_evt = strcmp("/parameter_events", subscription->get_topic_name());
+
+    if (subscription->is_serialized()) 
+  {
+    if (not_param_evt)
+    {
+      assert(data.message.serializedMessage); 
+    }
+
+    subscription->handle_serialized_message(data.message.serializedMessage, data.messageInfo);
+    subscription->return_serialized_message(data.message.serializedMessage);
+  }
+
+  else if (subscription->can_loan_messages()) 
+  {
+    // TODO: figure out if loanedMessage should always be non-null
+    if (not_param_evt)
+    {
+      assert(data.message.loanedMessage); 
+    }
+
+    subscription->handle_loaned_message(data.message.loanedMessage, data.messageInfo);
+    if (data.message.loanedMessage != nullptr) 
+    {
+      rcl_ret_t ret = rcl_return_loaned_message_from_subscription(subscription->get_subscription_handle().get(), data.message.loanedMessage);
+      if (RCL_RET_OK != ret) {
+        RCLCPP_ERROR(
+          rclcpp::get_logger("rclcpp"),
+          "rcl_return_loaned_message_from_subscription() failed for subscription on topic '%s': %s",
+          subscription->get_topic_name(), rcl_get_error_string().str);
+      }
+      data.message.loanedMessage = nullptr;
+    }
+  }
+
+  else 
+  {
+    if (not_param_evt)
+    {
+      assert(data.message.copiedMessage); 
+    }
+
+    subscription->handle_message(data.message.copiedMessage, data.messageInfo);
+    subscription->return_message(data.message.copiedMessage);
+  }
+}
+
+static bool take_service(rclcpp::ServiceBase::SharedPtr service, rclcpp::executors::ServiceHandlerInputs &data) 
+{
+  data.requestHeader = service->create_request_header();
+  data.request = service->create_request();
+  bool taken = take_and_do_error_handling(
+      "taking a service server request from service",
+      service->get_service_name(),
+      [&]() {return service->take_type_erased_request(data.request.get(), *(data.requestHeader));
+      });
+
+  return taken;
+}
+
+static bool take_client(rclcpp::ClientBase::SharedPtr client, rclcpp::executors::ClientHandlerInputs &data)
+{
+  data.requestHeader = client->create_request_header();
+  data.response = client->create_response();
+  bool taken = take_and_do_error_handling(
+    "taking a service client response from service",
+    client->get_service_name(),
+    [&]() {return client->take_type_erased_response(data.response.get(), *(data.requestHeader));});
+
+  return taken;
+}
+
+void SingleThreadedExecutor::execute_executable(AnyExecutable any_exec, CallbackInputs callbackInputs) {
+  if (any_exec.callback_group->type() == CallbackGroupType::MutuallyExclusive) {
+    any_exec.callback_group->callback_group_mutex.lock();
+  }
+
+  if (any_exec.timer)
+  {
+    execute_timer(any_exec.timer);
+  }
+  else if (any_exec.subscription)
+  {
+    exec_subscription(any_exec.subscription, callbackInputs.subscriptionInput);
+  }
+  else if (any_exec.service)
+  {
+    any_exec.service->handle_request(callbackInputs.serviceInput.requestHeader,
+                                     callbackInputs.serviceInput.request);
+  } 
+  else if (any_exec.client) 
+  {
+    any_exec.client->handle_response(callbackInputs.clientInput.requestHeader,
+                                     callbackInputs.clientInput.response);
+  } else if (any_exec.waitable) {
+    any_exec.waitable->execute(any_exec.data);
+  }
+
+  if (any_exec.callback_group->type() == CallbackGroupType::MutuallyExclusive) {
+    any_exec.callback_group->callback_group_mutex.unlock();
+  }
+  any_exec.callback_group.reset();
+}
+
+void SingleThreadedExecutor::create_thread(const uint32_t worker_id) {
+  std::thread new_thread(
+    std::bind(static_cast<void (SingleThreadedExecutor::*)()>(&SingleThreadedExecutor::worker_thread_func), this, const uint32_t worker_id));
+
+  if (sched_setaffinity(sched::get_pid(new_thread.native_handle()),
+                        sizeof(cpu_set_t), &(this->cpuset)) == -1) {
+    std::cerr << "Error setting CPU affinity: " << strerror(errno) << std::endl;
+    exit(1);
+  }
   new_thread.detach();
 }
 
-inline void SingleThreadedExecutor::create_thread(AnyExecutable any_exec, std::shared_ptr<void>& message, rclcpp::MessageInfo* message_info) {
-  // auto attr = get_sched_attr(any_exec);
+void SingleThreadedExecutor::create_thread(const AnyExecutable any_exec, CallbackInputs data, const uint32_t worker_id) {
+  assert(
+    any_exec.subscription
+    || any_exec.timer
+    || any_exec.service
+    || any_exec.client
+    || any_exec.waitable
+  );
+
   auto sched_entity = get_sched_entity(any_exec);
   auto attr = get_sched_attr(any_exec);
-  /* here we use std::thread instead of pthread to make it clean. They involve the same
-     underlying syscalls. */
-
   const std::string nodeName = any_exec.node_base->get_name();
-	if (any_exec.subscription)
-	{
-		assert(message.get() != nullptr);
-		assert(message_info != nullptr);
-	}
 
   try
   {
-    //   RCLCPP_INFO(rclcpp::get_logger("rclcpp"),
-    //   "Assigning thread with sched_runtime=%llu, sched_deadline=%llu, sched_period=%llu",
-    //   attr->sched_runtime,
-    //   attr->sched_deadline,
-    //   attr->sched_period
-    // );
+    //std::thread new_thread(std::bind(&SingleThreadedExecutor::worker_thread_func, this, std::move(any_exec), std::move(data), attr));
+    std::thread new_thread(
+      std::bind(static_cast<void (SingleThreadedExecutor::*)(AnyExecutable, CallbackInputs, sched::SchedAttr*)>(&SingleThreadedExecutor::worker_thread_func),
+       this, std::move(any_exec), std::move(data), attr, const uint32_t worker_id)
+      );
 
-    std::thread new_thread(std::bind(&SingleThreadedExecutor::thread_start, this, std::move(any_exec), message, message_info, attr));
-
-
-    if (sched_setaffinity(sched::get_pid(new_thread.native_handle()), sizeof(cpu_set_t), &ext_cpuset) == -1) {
+    if (sched_setaffinity(sched::get_pid(new_thread.native_handle()), sizeof(cpu_set_t), &(this->cpuset)) == -1) {
       std::cerr << "Error setting CPU affinity: " << strerror(errno) << std::endl;
+      exit(1);
     }
 
-
-
-    //std::cout << "trying to set new deadline" << std::endl;
-    if (!sched_entity) {
-      //std::cout << "this is not a sched entity" << std::endl;
-    }
     if (sched_entity->edf_attr) {
       if (sched_entity->is_source) {
         //std::cout << "this is a source" << std::endl;
@@ -376,98 +483,156 @@ inline void SingleThreadedExecutor::create_thread(AnyExecutable any_exec, std::s
   }
 }
 
-void SingleThreadedExecutor::assign_or_create(AnyExecutable any_exec) {
-
-	std::shared_ptr<void> message(nullptr);
-	rclcpp::MessageInfo* message_info = nullptr;
-  //printf("assign or create\n");
-	if (any_exec.subscription)
+bool SingleThreadedExecutor::take_message(const AnyExecutable& any_exec, CallbackInputs& inputs)
+{
+  bool taken = false;
+  if (any_exec.subscription)
 	{
-		bool taken = take_message(any_exec, message, &message_info);	
+    taken = take_subscription(any_exec.subscription, inputs.subscriptionInput);
 		assert(taken);
-		if (!taken)
-		{
-			return;
-		}
-		assert(message.get() != nullptr);
-		assert(message_info != nullptr);
+    //assert(inputs.subscriptionInput.messageInfo);
+    if (any_exec.subscription->is_serialized()) 
+    {
+      assert(inputs.subscriptionInput.message.serializedMessage);
+    }
+    else if (any_exec.subscription->can_loan_messages()) 
+    {
+      assert(inputs.subscriptionInput.message.loanedMessage);
+    }
+    else
+    {
+      assert(inputs.subscriptionInput.message.copiedMessage);
+    }
 	}
-
-  // TRACEPOINT(rclcpp_idle_thread_stack_pop);
-  auto idle_thread = idle_threads.pop();
-  if (idle_thread == nullptr) {
-    create_thread(std::move(any_exec), message, message_info);
-    return;
+  else if (any_exec.service)
+  {
+    taken = take_service(any_exec.service, inputs.serviceInput);
+    assert(taken);
+    assert(inputs.serviceInput.requestHeader);
+    assert(inputs.serviceInput.request);
   }
+  else if (any_exec.client)
+  {
+    taken = take_client(any_exec.client, inputs.clientInput);
+    assert(taken);
+    assert(inputs.clientInput.requestHeader);
+    assert(inputs.clientInput.response);
+  }
+  else
+  {
+    taken = true;
+  }
+
+  return taken;
+}
+
+void SingleThreadedExecutor::assign_thread(ThreadData* thread, AnyExecutable any_exec, CallbackInputs callbackInputs)
+{
+  
+  assert(
+    any_exec.subscription
+    || any_exec.timer
+    || any_exec.service
+    || any_exec.client
+    || any_exec.waitable
+  );
+  
+  // Fill in the scheduling attributes of the worker thread taking the callback
   auto sched_entity = get_sched_entity(any_exec);
-  auto attr = get_sched_attr(any_exec);
-	assert(attr != nullptr);
-		
-  idle_thread->any_exec = std::move(any_exec);
+  thread->any_exec = std::move(any_exec);
+  thread->callbackInputs = std::move(callbackInputs);
+  thread->sched_attr = get_sched_attr(thread->any_exec);
+  assert(thread->sched_attr);
 
-	idle_thread->message = message;
-	idle_thread->message_info = message_info;
-
-  idle_thread->sched_attr = attr;
   int res = 0;
-  //std::cout << "trying to set new deadline" << std::endl;
-  if (!sched_entity) {
-    //std::cout << "this is not a sched entity" << std::endl;
-  }
   if (sched_entity->edf_attr) {
     if (sched_entity->is_source) {
-      //std::cout << "this is a source" << std::endl;
       struct timespec now;
       clock_gettime(CLOCK_MONOTONIC, &now);
-      //std::cout << "time in sec: " << now.tv_sec << std::endl;
       sched_entity->edf_attr->abs_deadline = (uint64_t) now.tv_sec * SEC_IN_NSEC + now.tv_nsec + sched_entity->relative_deadline;
     }
-    //std::cout << "abs deadline is: " << sched_entity->edf_attr->abs_deadline << std::endl;
-    res = (sched::update_deadline(idle_thread->pthread_id, sched_entity->edf_attr) == false);
+    res = (sched::update_deadline(thread->pthread_id, sched_entity->edf_attr) == false);
   } else {
-    res = sched::syscall_sched_setattr(idle_thread->pid, attr);
+    res = sched::syscall_sched_setattr(thread->pid, thread->sched_attr);
   }
   
-	if (res != 0)
+	if (res)
 	{
 		perror("Error while setting idle thread's sched_attr: ");
 			RCLCPP_ERROR(
 				rclcpp::get_logger("rclcpp"),
 				"Error: Tried setting idle thread (pid=%d) with sched_attr, but got return code %d",
-				idle_thread->pid,
+				thread->pid,
 				res
 			);
+
+    assert(false);
 	}
 
-	assert(res == 0);
-	// if (attr->sched_priority == 99)
-	// {
-	// 	if (any_exec.subscription)
-	// 	{
-	// 		RCLCPP_ERROR(
-	// 			rclcpp::get_logger("rclcpp"),
-	// 			"Error: Node %s is trying to run a subscription CB from topic %s with priority 99",
-	// 			any_exec.node_base->get_name(),
-	// 			any_exec.subscription->get_topic_name());
-	// 	}
-	// 	else
-	// 	{
-	// 		RCLCPP_ERROR(
-	// 			rclcpp::get_logger("rclcpp"),
-	// 			"Error: Node %s is trying to run a non-subscription CB with priority 99",
-	// 			any_exec.node_base->get_name());
-	// 	}
-	// }
-  // TRACEPOINT(rclcpp_wake_worker_thread, idle_thread->pid);
-  idle_thread->is_busy.set_val(1, true);
+  thread->is_busy.set_val(1, true);
 }
 
+void SingleThreadedExecutor::dispatch(AnyExecutable any_exec) {
 
+  if (
+    any_exec.subscription == nullptr
+    && any_exec.timer  == nullptr
+    && any_exec.service == nullptr
+    && any_exec.client == nullptr 
+    && any_exec.waitable == nullptr
+  )
+  {
+    execute_any_executable(any_exec);
+    return;
+  }
 
-SingleThreadedExecutor::SingleThreadedExecutor(const rclcpp::ExecutorOptions & options)
-: rclcpp::Executor(options) {}
+  assert(
+    any_exec.subscription
+    || any_exec.timer
+    || any_exec.service
+    || any_exec.client
+    || any_exec.waitable
+  );
 
-SingleThreadedExecutor::~SingleThreadedExecutor() {}
+  CallbackInputs callbackInput;
+
+  // Takes message off waitset if subscription, service, or client. A nop for timers and waitables.
+	take_message(any_exec, callbackInput);
+
+  assert(
+    any_exec.subscription
+    || any_exec.timer
+    || any_exec.service
+    || any_exec.client
+    || any_exec.waitable
+  );
+
+  ThreadData* idle_thread = idle_threads.pop();
+
+  // If there are no idle work threads, then make a new one
+  if (idle_thread == nullptr) {
+    create_thread(std::move(any_exec), std::move(callbackInput));
+    return;
+  }
+
+  assert(
+    any_exec.subscription
+    || any_exec.timer
+    || any_exec.service
+    || any_exec.client
+    || any_exec.waitable
+  );
+
+  // Assign new callback to the idle thread
+  assign_thread(idle_thread, std::move(any_exec), std::move(callbackInput));
+}
+
+void SingleThreadedExecutor::set_cpuset(const cpu_set_t new_cpuset)
+{
+  memcpy(&(this->cpuset), &new_cpuset, sizeof(cpu_set_t));
+  this->cpuset = new_cpuset;
+  assert(CPU_EQUAL(&new_cpuset, &(this->cpuset)));
+}
 
 void
 SingleThreadedExecutor::spin() {
@@ -475,20 +640,9 @@ SingleThreadedExecutor::spin() {
   if (spinning.exchange(true)) {
     throw std::runtime_error("spin() called while already spinning");
   }
-  CPU_ZERO(&ext_cpuset);
-  CPU_SET(10, &ext_cpuset);
-  CPU_SET(11, &ext_cpuset);
-  CPU_SET(12, &ext_cpuset);
-  CPU_SET(13, &ext_cpuset);
-  char* core_count = getenv("ROS_CORE_COUNT");
-/*
-  if (!core_count || atoi(core_count) != 2) {
-    CPU_SET(11, &ext_cpuset);
-    CPU_SET(12, &ext_cpuset);
-  }
-*/
+  // char* core_count = getenv("ROS_CORE_COUNT");
 
-  RCPPUTILS_SCOPE_EXIT(this->spinning.store(false); );
+  RCPPUTILS_SCOPE_EXIT(this->spinning.store(false););
   int period_ns;
   char* method = getenv("ROS_SCHED_METHOD");
   char* period_str = getenv("ROS_SCHED_PERIOD");
@@ -511,9 +665,10 @@ SingleThreadedExecutor::spin() {
     period_ns = atoi(period_str);
     assert(period_ns < SEC_IN_NSEC);
   }
-  if (method == nullptr || strcmp(method, "DEADLINE") == 0) {
-    spin_deadline(period_ns);
-  } else if (strcmp(method, "SLEEP") == 0) {
+  // if (method == nullptr || strcmp(method, "DEADLINE") == 0) {
+  //   spin_deadline(period_ns);
+  // } 
+  if (method == nullptr || strcmp(method, "SLEEP") == 0) {
     spin_sleep(period_ns);
   } else if (strcmp(method, "TIMER") == 0) {
     spin_timer(period_ns);
@@ -586,17 +741,19 @@ void inc_period(struct timespec& period_time, int period_ns)
   }
 }
 
-void next_time(int period_ns, struct timespec& cur_time) {
-  assert(clock_gettime(CLOCK_MONOTONIC, &cur_time) == 0);
-  cur_time.tv_nsec -= cur_time.tv_nsec % period_ns - period_ns;
-  cur_time.tv_sec += cur_time.tv_nsec % SEC_IN_NSEC;
-  cur_time.tv_nsec %= SEC_IN_NSEC;
-  return;
-}
+// void next_time(int period_ns, struct timespec& cur_time) {
+//   assert(clock_gettime(CLOCK_MONOTONIC, &cur_time) == 0);
+//   cur_time.tv_nsec -= cur_time.tv_nsec % period_ns - period_ns;
+//   cur_time.tv_sec += cur_time.tv_nsec % SEC_IN_NSEC;
+//   cur_time.tv_nsec %= SEC_IN_NSEC;
+//   return;
+// }
 
 void
 SingleThreadedExecutor::spin_sleep(int period_ns)
 {
+  std::cout << "In spin_sleep" << std::endl;
+
   sched::SchedAttr attr;
   attr.sched_policy = SCHED_FIFO;
   attr.sched_priority = 99;
@@ -604,11 +761,10 @@ SingleThreadedExecutor::spin_sleep(int period_ns)
 
   // Setup timer so it sleeps until the next period point
   struct timespec period_point;
-  int flags = TIMER_ABSTIME;
-  int err = 0;
+  // int flags = TIMER_ABSTIME;
+  // int err = 0;
   assert(clock_gettime(CLOCK_MONOTONIC, &period_point) == 0);
   inc_period(period_point, period_ns);
-	//next_time(period_ns, period_point);
 
 	struct timespec wake_time_actual;
 	wake_time_actual.tv_sec = 9;
@@ -635,13 +791,11 @@ SingleThreadedExecutor::spin_sleep(int period_ns)
 
   	r = clock_gettime(CLOCK_MONOTONIC, &period_point);
 		assert(r == 0);
-		struct timespec curr_time = period_point;
+		// struct timespec curr_time = period_point;
     inc_period(period_point, period_ns);
 
 		//std::cout << "Sleeping at " << curr_time.tv_sec * 1000'000'000 + curr_time.tv_nsec << "\n";
 		//std::cout << "Will wakeup at " << period_point.tv_sec * 1000'000'000 + period_point.tv_nsec << std::endl;
-
-		//next_time(period_ns, period_point);
 
     // while (true) {
     //   rclcpp::AnyExecutable executable;
@@ -653,30 +807,30 @@ SingleThreadedExecutor::spin_sleep(int period_ns)
   }
 }
 
-void
-SingleThreadedExecutor::spin_deadline(int period_ns)
-{
-  std::cout << "In spin_deadline" << std::endl;
+// void
+// SingleThreadedExecutor::spin_deadline(int period_ns)
+// {
+//   std::cout << "In spin_deadline" << std::endl;
 
-  for (int i = 0; i < 500; i++)
-  {
-    create_idle_thread();
-  }
+//   for (int i = 0; i < 500; i++)
+//   {
+//     create_idle_thread();
+//   }
   
 
-  sched::SchedAttr attr;
-  attr.sched_policy = SCHED_DEADLINE;
-  attr.sched_priority = 0;
-  attr.sched_period = period_ns;
-  attr.sched_runtime = period_ns;
-  attr.sched_deadline = period_ns;
-	attr.sched_flags |= 0x04;
-  sched::syscall_sched_setattr(gettid(), &attr);
-  while (rclcpp::ok(this->context_) && spinning.load()) {
-    this->schedule();
-    sched_yield();
-  }
-}
+//   sched::SchedAttr attr;
+//   attr.sched_policy = SCHED_DEADLINE;
+//   attr.sched_priority = 0;
+//   attr.sched_period = period_ns;
+//   attr.sched_runtime = period_ns;
+//   attr.sched_deadline = period_ns;
+// 	attr.sched_flags |= 0x04;
+//   sched::syscall_sched_setattr(gettid(), &attr);
+//   while (rclcpp::ok(this->context_) && spinning.load()) {
+//     this->schedule();
+//     sched_yield();
+//   }
+// }
 
 void SingleThreadedExecutor::schedule() {
   // TRACEPOINT(rclcpp_schedule_entry);
@@ -687,7 +841,7 @@ void SingleThreadedExecutor::schedule() {
     return;
   }
   
-  assign_or_create(std::move(executable));
+  dispatch(std::move(executable));
   
   num_cb_dispatched++;
   while (true) {
@@ -697,8 +851,11 @@ void SingleThreadedExecutor::schedule() {
       return;
     }
 
-    assign_or_create(std::move(ready_executable));
+    dispatch(std::move(ready_executable));
     num_cb_dispatched++;
   }
   // TRACEPOINT(rclcpp_schedule_exit, num_cb_dispatched);
+}
+
+}
 }
