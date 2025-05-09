@@ -96,6 +96,7 @@ private:
   void spin_timer(int period_ns);
   void spin_sleep(int period_ns);
   void spin_deadline(int period_ns);
+  void spin_forever();
   syncutil::Condition signal_scheduler;
   void execute_executable(AnyExecutable any_exec, std::shared_ptr<void>& message, rclcpp::MessageInfo* message_info);
   void schedule();

@@ -517,6 +517,8 @@ SingleThreadedExecutor::spin() {
     spin_sleep(period_ns);
   } else if (strcmp(method, "TIMER") == 0) {
     spin_timer(period_ns);
+  } else if (strcmp(method, "SPIN") == 0) {
+    spin_forever();
   } else {
     assert(false);
   }
@@ -702,3 +704,24 @@ void SingleThreadedExecutor::schedule() {
   }
   // TRACEPOINT(rclcpp_schedule_exit, num_cb_dispatched);
 }
+
+void
+SingleThreadedExecutor::spin_forever()
+{
+  sched::SchedAttr attr;
+  attr.sched_policy = SCHED_FIFO;
+  attr.sched_priority = 99;
+  assert(sched::syscall_sched_setattr(gettid(), &attr) == 0);
+
+  // Setup timer so it sleeps until the next period point
+  rclcpp::AnyExecutable executable;
+  while (rclcpp::ok(this->context_) && spinning.load()) {
+    if (!get_next_executable(executable, std::chrono::nanoseconds(-1))) {
+      continue;
+    }
+
+    assign_or_create(std::move(executable));
+    num_cb_dispatched++;
+  }
+}
+
