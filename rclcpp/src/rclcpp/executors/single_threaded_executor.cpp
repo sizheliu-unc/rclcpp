@@ -721,7 +721,7 @@ SingleThreadedExecutor::spin_forever()
     }
 
     assign_or_create(std::move(executable));
-    num_cb_dispatched++;
+    // num_cb_dispatched++;
   }
 }
 
