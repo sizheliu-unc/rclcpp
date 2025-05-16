@@ -22,6 +22,7 @@ namespace rclcpp {
 // forward declarations
 namespace executors {
     class SingleThreadedExecutor;
+    class NoExecutor;
 }; // rclcpp::executors
 namespace sched {
 
@@ -115,6 +116,7 @@ struct edf_sched_entity {
 
 class SchedBase {
 friend class executors::SingleThreadedExecutor;
+friend class executors::NoExecutor;
 public:
     virtual ~SchedBase() = default;
     virtual void
