@@ -40,12 +40,14 @@ namespace rclcpp
 {
 namespace executors
 {
+class NoExecutor;
 
 enum ExecutableType {
   SUBSCRIPTION,
   SERVICE,
   CLIENT,
-  WAITABLE
+  WAITABLE,
+  TIMER
 };
 
 struct Executable {
@@ -55,6 +57,7 @@ struct Executable {
   rclcpp::ServiceBase::SharedPtr service = nullptr;
   rclcpp::ClientBase::SharedPtr client = nullptr;
   rclcpp::Waitable::SharedPtr waitable = nullptr;
+  rclcpp::TimerBase::SharedPtr timer = nullptr;
 };
 
 struct ThreadDataNoExec {
@@ -64,6 +67,14 @@ struct ThreadDataNoExec {
   pid_t pid;
 };
 
+struct PosixTimer {
+  NoExecutor* executor;
+  uint64_t period;
+  rclcpp::TimerBase::SharedPtr timer;
+  rclcpp::CallbackGroup::SharedPtr callback_group;
+  timer_t timerid;
+  int index;
+};
 
 /// Single-threaded executor implementation.
 /**
@@ -111,6 +122,11 @@ public:
 
   bool started;
 
+  static uint64_t 
+  get_period_from_timer(const rclcpp::TimerBase::SharedPtr &timer);
+
+  void
+  assign_or_create(Executable &executable);
 
 private:
   void 
@@ -126,11 +142,11 @@ private:
   handle_waitable(rclcpp::CallbackGroup::SharedPtr callback_group, const rclcpp::Waitable::SharedPtr &waitable, size_t num_msgs);
 
   void
-  assign_or_create(Executable &executable);
-  void
   create_thread(Executable executable);
   void
   thread_start(Executable executable);
+
+  std::vector<PosixTimer*> timers;
 };
 
 }  // namespace executors

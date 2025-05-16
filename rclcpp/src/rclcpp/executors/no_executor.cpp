@@ -23,6 +23,7 @@
 #include <unordered_set>
 #include <sched.h>
 #include <system_error>
+#include <atomic>
 
 #include "rclcpp/callback_group.hpp"
 
@@ -31,29 +32,73 @@
 
 #include "tracetools/tracetools.h"
 
+#define UNUSED(expr) do { (void)(expr); } while (0)
 #define SEC_IN_NSEC 1'000'000'000
 
 using std::placeholders::_1;
 using rclcpp::executors::NoExecutor;
 using rclcpp::executors::Executable;
 using rclcpp::executors::ExecutableType;
+using rclcpp::executors::PosixTimer;
 
+struct itimerspec unset_timer = {};
+void 
+handle_timer(int sig, siginfo_t *si, void *uc);
 
 NoExecutor::NoExecutor(const rclcpp::ExecutorOptions & options)
 : rclcpp::Executor(options) {
   started = false;
 }
 
-NoExecutor::~NoExecutor() {}
+NoExecutor::~NoExecutor() {
+  stop();
+}
 
 void
 NoExecutor::start() {
+  pid_t cur_tid = gettid();
+  for (PosixTimer *timer: timers) {
+    timer_t timerId = 0;
+    union sigval sigv;
+    sigv.sival_ptr = (void *) timer;
+    struct sigevent sev = {};
+    sev.sigev_notify = SIGEV_THREAD_ID;
+    sev.sigev_signo = SIGRTMAX;
+    sev.sigev_value = sigv;
+    sev._sigev_un._tid = cur_tid;
+    /* specifies the action when receiving a signal */
+    assert(timer_create(CLOCK_MONOTONIC, &sev, &timerId) == 0);
+    timer->timerid = timerId;
+  }
+
+  struct sigaction sa = {};
+  sa.sa_flags = (SA_SIGINFO | SA_NODEFER | SA_RESTART);
+  sa.sa_sigaction = handle_timer;
+  sigemptyset(&sa.sa_mask);
+  assert(sigaction(SIGRTMAX, &sa, NULL) == 0);
+  
   started = true;
+  for (PosixTimer *timer: timers) {
+    /* specify start delay and interval */
+    struct itimerspec its = {};
+    struct timespec it_interval = {};
+    struct timespec it_value = {};
+    it_interval.tv_nsec = timer->period % SEC_IN_NSEC;
+    it_interval.tv_sec = timer->period / SEC_IN_NSEC;
+    it_value.tv_nsec = 50;
+    it_value.tv_sec = 0;
+    its.it_interval = it_interval;
+    its.it_value = it_value;
+    assert(timer_settime(timer->timerid, 0, &its, NULL) == 0);
+  }
 }
 
 void
 NoExecutor::stop() {
   started = false;
+  for (PosixTimer *timer: timers) {
+    assert(timer_settime(timer->timerid, 0, &unset_timer, NULL) == 0);
+  }
 }
 
 void
@@ -78,6 +123,8 @@ NoExecutor::execute_executable(Executable &executable) {
       executable.waitable->execute(data);
       break;
     }
+  case ExecutableType::TIMER:
+    executable.timer->execute_callback();
   default:
     break;
   }
@@ -86,6 +133,17 @@ NoExecutor::execute_executable(Executable &executable) {
     executable.callback_group.reset();
   }
 }
+
+struct rcl_timer_ {
+  void* unused[5];
+  std::atomic_int_least64_t period;
+};
+
+uint64_t 
+NoExecutor::get_period_from_timer(const rclcpp::TimerBase::SharedPtr &timer) {
+  return ((rcl_timer_*) timer->get_timer_handle()->impl)->period;
+}
+
 
 void
 NoExecutor::add_node(std::shared_ptr<rclcpp::Node> node_ptr, bool notify) {
@@ -101,8 +159,8 @@ NoExecutor::add_node(std::shared_ptr<rclcpp::Node> node_ptr, bool notify) {
       [this, &callback_group](const rclcpp::ClientBase::SharedPtr &client) {
         client->set_on_new_response_callback(std::bind(&NoExecutor::handle_client, this, callback_group, client, _1));
       },
-      [](const rclcpp::TimerBase::SharedPtr &timer) {
-          
+      [this, &callback_group](const rclcpp::TimerBase::SharedPtr &timer) {
+        this->timers.push_back(new PosixTimer({this, get_period_from_timer(timer), timer, callback_group, 0, this->timers.size()}));
       },
       [this, &callback_group](const rclcpp::Waitable::SharedPtr &waitable) {
         waitable->set_on_ready_callback(std::bind(&NoExecutor::handle_waitable, this, callback_group, waitable, _1));
@@ -126,7 +184,7 @@ NoExecutor::remove_node(std::shared_ptr<rclcpp::Node> node_ptr, bool notify)
         client->clear_on_new_response_callback();
       },
       [](const rclcpp::TimerBase::SharedPtr &timer) {
-          
+        UNUSED(timer);
       },
       [](const rclcpp::Waitable::SharedPtr &waitable) {
         waitable->clear_on_ready_callback();
@@ -192,6 +250,26 @@ NoExecutor::handle_waitable(rclcpp::CallbackGroup::SharedPtr callback_group, con
   }
 }
 
+void 
+handle_timer(int sig, siginfo_t *si, void *uc) {
+  UNUSED(sig);
+  UNUSED(uc);
+  PosixTimer *ptimer = static_cast<PosixTimer*>(si->_sifields._rt.si_sigval.sival_ptr);
+  if (!ptimer->executor->started) {
+    return;
+  }
+  if (ptimer->timer->is_canceled()) {
+    timer_settime(ptimer->timerid, 0, &unset_timer, NULL);
+    return;
+  }
+  Executable executable;
+  executable.type = ExecutableType::TIMER;
+  executable.callback_group = ptimer->callback_group;
+  executable.timer = ptimer->timer;
+  ptimer->executor->assign_or_create(executable);
+}
+
+
 std::shared_ptr<rclcpp::sched::SchedBase> get_sched_base(rclcpp::executors::Executable& executable) {
   switch (executable.type)
   {
@@ -203,6 +281,8 @@ std::shared_ptr<rclcpp::sched::SchedBase> get_sched_base(rclcpp::executors::Exec
     return executable.client;
   case ExecutableType::WAITABLE:
     return executable.waitable;
+  case ExecutableType::TIMER:
+    return executable.timer;
   default:
     return nullptr;
   }
@@ -273,4 +353,10 @@ NoExecutor::thread_start(Executable executable) {
 }
 
 void
-NoExecutor::spin() {}
+NoExecutor::spin() {
+  start();
+  while (rclcpp::ok(this->context_)) {
+    sleep(600);
+  }
+  stop();
+}
