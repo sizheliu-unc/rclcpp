@@ -37,6 +37,7 @@ namespace rclcpp
 namespace executors
 {
   class SingleThreadedExecutor;
+  class NoExecutor;
 }   // namespace executors
 
 // Forward declarations for friend statement in class CallbackGroup
@@ -57,6 +58,7 @@ enum class CallbackGroupType
 class CallbackGroup
 {
 	friend class rclcpp::executors::SingleThreadedExecutor;
+  friend class rclcpp::executors::NoExecutor;
   friend class rclcpp::node_interfaces::NodeServices;
   friend class rclcpp::node_interfaces::NodeTimers;
   friend class rclcpp::node_interfaces::NodeTopics;
