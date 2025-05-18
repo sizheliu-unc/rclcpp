@@ -152,6 +152,7 @@ NoExecutor::add_node(std::shared_ptr<rclcpp::Node> node_ptr, bool notify) {
     callback_group->collect_all_ptrs(
       [this, &callback_group](const rclcpp::SubscriptionBase::SharedPtr &subscription) {
         subscription->set_on_new_message_callback(std::bind(&NoExecutor::handle_subscription, this, callback_group, subscription, _1));
+        subscription->set_on_new_intra_process_message_callback(std::bind(&NoExecutor::handle_subscription, this, callback_group, subscription, _1));
       },
       [this, &callback_group](const rclcpp::ServiceBase::SharedPtr &service) {
         service->set_on_new_request_callback(std::bind(&NoExecutor::handle_service, this, callback_group, service, _1));
@@ -176,6 +177,7 @@ NoExecutor::remove_node(std::shared_ptr<rclcpp::Node> node_ptr, bool notify)
     callback_group->collect_all_ptrs(
       [](const rclcpp::SubscriptionBase::SharedPtr &subscription) {
         subscription->clear_on_new_message_callback();
+        subscription->clear_on_new_intra_process_message_callback();
       },
       [](const rclcpp::ServiceBase::SharedPtr &service) {
         service->clear_on_new_request_callback();
