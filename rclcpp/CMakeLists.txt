@@ -20,6 +20,7 @@ find_package(rosidl_typesupport_c REQUIRED)
 find_package(rosidl_typesupport_cpp REQUIRED)
 find_package(statistics_msgs REQUIRED)
 find_package(tracetools REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
 # TODO(wjwwood): remove this when gtest can build on its own, when using target_compile_features()
 # Default to C++17
@@ -37,6 +38,7 @@ endif()
 set(${PROJECT_NAME}_SRCS
   src/rclcpp/any_executable.cpp
   src/rclcpp/callback_group.cpp
+  src/rclcpp/chain_yaml_parser.cpp
   src/rclcpp/client.cpp
   src/rclcpp/clock.cpp
   src/rclcpp/cond.cpp
@@ -192,6 +194,7 @@ target_include_directories(${PROJECT_NAME} PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>"
   "$<INSTALL_INTERFACE:include/${PROJECT_NAME}>")
 target_link_libraries(${PROJECT_NAME} ${CMAKE_THREAD_LIBS_INIT})
+target_link_libraries(${PROJECT_NAME} PUBLIC yaml-cpp)
 # specific order: dependents before dependencies
 ament_target_dependencies(${PROJECT_NAME}
   "ament_index_cpp"
@@ -242,6 +245,7 @@ ament_export_dependencies(rosidl_runtime_cpp)
 ament_export_dependencies(rcl_yaml_param_parser)
 ament_export_dependencies(statistics_msgs)
 ament_export_dependencies(tracetools)
+ament_export_dependencies(yaml-cpp)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
