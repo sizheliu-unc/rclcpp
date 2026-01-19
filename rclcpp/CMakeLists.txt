@@ -38,6 +38,7 @@ endif()
 set(${PROJECT_NAME}_SRCS
   src/rclcpp/any_executable.cpp
   src/rclcpp/callback_group.cpp
+  src/rclcpp/chain_priority_allocator.cpp
   src/rclcpp/chain_yaml_parser.cpp
   src/rclcpp/client.cpp
   src/rclcpp/clock.cpp
