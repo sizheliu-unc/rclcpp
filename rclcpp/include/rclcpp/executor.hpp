@@ -45,6 +45,11 @@
 namespace rclcpp
 {
 
+namespace detail
+{
+class ChainPriorityAllocator;
+}  // namespace detail
+
 typedef std::map<rclcpp::CallbackGroup::WeakPtr,
     rclcpp::node_interfaces::NodeBaseInterface::WeakPtr,
     std::owner_less<rclcpp::CallbackGroup::WeakPtr>> WeakCallbackGroupsToNodesMap;
@@ -207,6 +212,12 @@ public:
   RCLCPP_PUBLIC
   virtual void
   add_node(std::shared_ptr<rclcpp::Node> node_ptr, bool notify = true);
+
+  /// Set the chain priority allocator used to assign fixed priorities.
+  RCLCPP_PUBLIC
+  void
+  set_chain_priority_allocator(
+    std::shared_ptr<rclcpp::detail::ChainPriorityAllocator> allocator);
 
   /// Remove a node from the executor.
   /**
@@ -533,6 +544,9 @@ protected:
   virtual void
   add_callback_groups_from_nodes_associated_to_executor() RCPPUTILS_TSA_REQUIRES(mutex_);
 
+  void
+  apply_chain_priorities();
+
   /// Spinning state, used to prevent multi threaded calls to spin and to cancel blocking spins.
   std::atomic_bool spinning;
 
@@ -584,6 +598,9 @@ protected:
   /// nodes that are associated with the executor
   std::list<rclcpp::node_interfaces::NodeBaseInterface::WeakPtr>
   weak_nodes_ RCPPUTILS_TSA_GUARDED_BY(mutex_);
+
+  std::shared_ptr<rclcpp::detail::ChainPriorityAllocator>
+  chain_priority_allocator_ RCPPUTILS_TSA_GUARDED_BY(mutex_);
 
   /// shutdown callback handle registered to Context
   rclcpp::OnShutdownCallbackHandle shutdown_callback_handle_;

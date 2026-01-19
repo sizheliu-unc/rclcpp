@@ -481,3 +481,11 @@ SubscriptionBase::set_edf_entity(const sched::edf_sched_entity& sched_entity) {
     this->subscription_intra_process_->sched_entity = sched_entity;
   }
 }
+
+void
+SubscriptionBase::set_callback_name(const std::string & callback_name) {
+  rclcpp::sched::SchedBase::set_callback_name(callback_name);
+  if (use_intra_process_ && subscription_intra_process_) {
+    this->subscription_intra_process_->set_callback_name(callback_name);
+  }
+}
