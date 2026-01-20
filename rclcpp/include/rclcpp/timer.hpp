@@ -22,6 +22,7 @@
 #include <sstream>
 #include <thread>
 #include <type_traits>
+#include <string>
 #include <utility>
 
 #include "rclcpp/clock.hpp"
@@ -107,6 +108,10 @@ public:
   RCLCPP_PUBLIC
   virtual void
   execute_callback() = 0;
+
+  RCLCPP_PUBLIC
+  void
+  set_callback_name(const std::string & callback_name) override;
 
   RCLCPP_PUBLIC
   std::shared_ptr<const rcl_timer_t>

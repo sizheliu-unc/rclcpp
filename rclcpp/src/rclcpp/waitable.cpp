@@ -54,6 +54,12 @@ Waitable::get_number_of_ready_guard_conditions()
   return 0u;
 }
 
+void
+Waitable::set_callback_name(const std::string & callback_name)
+{
+  rclcpp::sched::SchedBase::set_callback_name(callback_name);
+}
+
 std::shared_ptr<void>
 Waitable::take_data_by_entity_id(size_t id)
 {

@@ -88,6 +88,12 @@ ServiceBase::exchange_in_use_by_wait_set_state(bool in_use_state)
   return in_use_by_wait_set_.exchange(in_use_state);
 }
 
+void
+ServiceBase::set_callback_name(const std::string & callback_name)
+{
+  rclcpp::sched::SchedBase::set_callback_name(callback_name);
+}
+
 rclcpp::QoS
 ServiceBase::get_response_publisher_actual_qos() const
 {

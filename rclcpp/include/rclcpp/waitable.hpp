@@ -18,6 +18,7 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <string>
 
 #include "rclcpp/macros.hpp"
 #include "rclcpp/visibility_control.hpp"
@@ -101,6 +102,10 @@ public:
   virtual
   size_t
   get_number_of_ready_guard_conditions();
+
+  RCLCPP_PUBLIC
+  void
+  set_callback_name(const std::string & callback_name) override;
 
   /// Add the Waitable to a wait set.
   /**
