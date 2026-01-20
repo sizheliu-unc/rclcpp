@@ -21,11 +21,11 @@
 namespace rclcpp
 {
 
-void ChainYamlParser::load_yaml_file(const std::string & yaml_file)
+void ChainYamlParser::load_yaml_file(const std::string & new_yaml_file)
 {
-  yaml_file_ = yaml_file;
+  yaml_file = new_yaml_file;
   try {
-    yaml_node_ = YAML::LoadFile(yaml_file);
+    yaml_node = YAML::LoadFile(new_yaml_file);
   } catch (const YAML::Exception & e) {
     RCLCPP_ERROR(
       rclcpp::get_logger("ChainYamlParser"),
@@ -37,12 +37,12 @@ void ChainYamlParser::load_yaml_file(const std::string & yaml_file)
 
 bool ChainYamlParser::parse()
 {
-  if (yaml_node_.IsNull() || !yaml_node_.IsMap()) {
+  if (yaml_node.IsNull() || !yaml_node.IsMap()) {
     RCLCPP_ERROR(rclcpp::get_logger("ChainYamlParser"), "YAML file is not a map");
     return false;
   }
 
-  const auto & chains_node = yaml_node_["chains"];
+  const auto & chains_node = yaml_node["chains"];
   if (!chains_node || !chains_node.IsMap()) {
     RCLCPP_ERROR(
       rclcpp::get_logger("ChainYamlParser"),
@@ -66,26 +66,26 @@ bool ChainYamlParser::parse()
       throw std::runtime_error(msg);
     }
 
-    const auto & callbacks_node = chain_node[kCallbacksKey];
+    const auto & callbacks_node = chain_node[CALLBACKS_KEY];
     if (!callbacks_node || !callbacks_node.IsSequence() || callbacks_node.size() == 0) {
       const auto msg =
-        "Chain '" + chain_name + "' has missing or empty '" + kCallbacksKey + "' field";
+        "Chain '" + chain_name + "' has missing or empty '" + CALLBACKS_KEY + "' field";
       RCLCPP_ERROR(rclcpp::get_logger("ChainYamlParser"), "%s", msg.c_str());
       throw std::runtime_error(msg);
     }
 
-    const auto & deadline_node = chain_node[kDeadlineKey];
+    const auto & deadline_node = chain_node[DEADLINE_KEY];
     if (!deadline_node || !deadline_node.IsScalar()) {
       const auto msg =
-        "Chain '" + chain_name + "' has missing or invalid '" + kDeadlineKey + "' field";
+        "Chain '" + chain_name + "' has missing or invalid '" + DEADLINE_KEY + "' field";
       RCLCPP_ERROR(rclcpp::get_logger("ChainYamlParser"), "%s", msg.c_str());
       throw std::runtime_error(msg);
     }
 
-    const auto & period_node = chain_node[kPeriodKey];
+    const auto & period_node = chain_node[PERIOD_KEY];
     if (!period_node || !period_node.IsScalar()) {
       const auto msg =
-        "Chain '" + chain_name + "' has missing or invalid '" + kPeriodKey + "' field";
+        "Chain '" + chain_name + "' has missing or invalid '" + PERIOD_KEY + "' field";
       RCLCPP_ERROR(rclcpp::get_logger("ChainYamlParser"), "%s", msg.c_str());
       throw std::runtime_error(msg);
     }
@@ -95,7 +95,7 @@ bool ChainYamlParser::parse()
       const auto deadline = deadline_node.as<std::uint32_t>();
       const auto period = period_node.as<std::uint32_t>();
 
-      user_chains_[chain_name] = UserChain{chain_name, callbacks_list, deadline, period};
+      user_chains[chain_name] = userChain{chain_name, callbacks_list, deadline, period};
       RCLCPP_DEBUG(
         rclcpp::get_logger("ChainYamlParser"),
         "Successfully parsed chain '%s' with %zu callbacks",
@@ -108,7 +108,7 @@ bool ChainYamlParser::parse()
     }
   }
 
-  if (user_chains_.empty()) {
+  if (user_chains.empty()) {
     RCLCPP_ERROR(rclcpp::get_logger("ChainYamlParser"), "No valid chains found in YAML file");
     return false;
   }

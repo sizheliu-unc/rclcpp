@@ -31,8 +31,8 @@ rclcpp::Logger get_chain_priority_logger()
 }  // namespace
 
 ChainPriorityAllocator::ChainPriorityAllocator(
-  const std::unordered_map<std::string, UserChain> & user_chains)
-: user_chains_(user_chains)
+  const std::unordered_map<std::string, userChain> & user_chains)
+: user_chains(user_chains)
 {
 }
 
@@ -118,7 +118,7 @@ void ChainPriorityAllocator::build_adjacency_list(
       CallbackInfo{pair.first, pair.second, 0});
   }
 
-  for (const auto & chain_pair : user_chains_) {
+  for (const auto & chain_pair : user_chains) {
     const auto & chain_name = chain_pair.first;
     const auto & chain = chain_pair.second;
     const auto & callbacks = chain.callbacks;

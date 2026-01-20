@@ -50,7 +50,7 @@ class RCLCPP_PUBLIC ChainPriorityAllocator
 {
 public:
   explicit ChainPriorityAllocator(
-    const std::unordered_map<std::string, UserChain> & user_chains);
+    const std::unordered_map<std::string, userChain> & user_chains);
 
   ChainPriorityAllocation allocate(
     const std::unordered_map<std::string, rclcpp::CallbackGroup::SharedPtr> &
@@ -92,7 +92,7 @@ private:
     std::map<std::uint32_t, std::vector<int>> & deadline_to_threadgroup_id_map);
   int generate_threadgroup_id();
 
-  const std::unordered_map<std::string, UserChain> & user_chains_;
+  const std::unordered_map<std::string, userChain> & user_chains;
 
   std::unordered_map<std::string, CallbackAdjacencyInfo> adjacency_list_;
   std::unordered_map<int, ThreadGroupAdjacencyInfo> threadgroup_adjacency_list_;
