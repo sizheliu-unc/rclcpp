@@ -168,8 +168,6 @@ NoExecutor::add_node(std::shared_ptr<rclcpp::Node> node_ptr, bool notify) {
       }
     );
   });
-
-  this->apply_chain_priorities();
 }
 
 void
