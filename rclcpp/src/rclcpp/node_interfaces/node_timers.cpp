@@ -40,7 +40,6 @@ NodeTimers::add_timer(
   } else {
     callback_group = node_base_->get_default_callback_group();
   }
-
   callback_group->add_timer(timer);
 
   auto & node_gc = node_base_->get_notify_guard_condition();
