@@ -724,4 +724,3 @@ SingleThreadedExecutor::spin_forever()
     // num_cb_dispatched++;
   }
 }
-

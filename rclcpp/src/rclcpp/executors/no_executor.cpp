@@ -24,11 +24,14 @@
 #include <sched.h>
 #include <system_error>
 #include <atomic>
+#include <mutex>
 
 #include "rclcpp/callback_group.hpp"
 
 #include "rclcpp/executors/no_executor.hpp"
 #include "rclcpp/sched_base.hpp"
+#include "rclcpp/detail/chain_priority_allocator.hpp"
+#include "rclcpp/logging.hpp"
 
 #include "tracetools/tracetools.h"
 
@@ -45,8 +48,11 @@ struct itimerspec unset_timer = {};
 void 
 handle_timer(int sig, siginfo_t *si, void *uc);
 
-NoExecutor::NoExecutor(const rclcpp::ExecutorOptions & options)
-: rclcpp::Executor(options) {
+NoExecutor::NoExecutor(
+  const rclcpp::ExecutorOptions & options,
+  std::shared_ptr<rclcpp::detail::ChainPriorityAllocator> chain_priority_allocator)
+: rclcpp::Executor(options),
+  chain_priority_allocator_(std::move(chain_priority_allocator)) {
   started = false;
 }
 
@@ -168,6 +174,8 @@ NoExecutor::add_node(std::shared_ptr<rclcpp::Node> node_ptr, bool notify) {
       }
     );
   });
+
+  apply_chain_priorities();
 }
 
 void
@@ -356,9 +364,140 @@ NoExecutor::thread_start(Executable executable) {
 
 void
 NoExecutor::spin() {
+  spinning.store(true);
+  RCPPUTILS_SCOPE_EXIT(this->spinning.store(false); );
+
+  {
+    std::lock_guard<std::mutex> guard{mutex_};
+    add_callback_groups_from_nodes_associated_to_executor();
+  }
+  apply_chain_priorities();
+
   start();
   while (rclcpp::ok(this->context_)) {
     sleep(600);
   }
   stop();
+}
+
+void
+NoExecutor::apply_chain_priorities()
+{
+  if (!chain_priority_allocator_) {
+    return;
+  }
+
+  std::unordered_map<std::string, rclcpp::CallbackGroup::SharedPtr> groups_by_name;
+  std::unordered_map<std::string, std::shared_ptr<rclcpp::sched::SchedBase>> entities_by_name;
+
+  const auto logger = rclcpp::get_logger("NoExecutor");
+  auto register_named_entity =
+    [&groups_by_name, &entities_by_name, logger](
+    const std::string & name,
+    const rclcpp::CallbackGroup::SharedPtr & callback_group,
+    const std::shared_ptr<rclcpp::sched::SchedBase> & entity)
+    {
+      if (name.empty() || !callback_group || !entity) {
+        return;
+      }
+      auto [entity_it, inserted] = entities_by_name.emplace(name, entity);
+      if (!inserted) {
+        RCLCPP_WARN(
+          logger,
+          "Duplicate callback name '%s'; keeping first registration",
+          name.c_str());
+        return;
+      }
+      groups_by_name.emplace(name, callback_group);
+    };
+
+  {
+    std::lock_guard<std::mutex> guard{mutex_};
+    for (const auto & pair : weak_groups_to_nodes_) {
+      auto group = pair.first.lock();
+      if (!group) {
+        continue;
+      }
+      group->collect_all_ptrs(
+        [&register_named_entity, &group](const rclcpp::SubscriptionBase::SharedPtr & subscription) {
+          if (subscription) {
+            register_named_entity(
+              subscription->get_callback_name(),
+              group,
+              std::static_pointer_cast<rclcpp::sched::SchedBase>(subscription));
+          }
+        },
+        [&register_named_entity, &group](const rclcpp::ServiceBase::SharedPtr & service) {
+          if (service) {
+            register_named_entity(
+              service->get_callback_name(),
+              group,
+              std::static_pointer_cast<rclcpp::sched::SchedBase>(service));
+          }
+        },
+        [&register_named_entity, &group](const rclcpp::ClientBase::SharedPtr & client) {
+          if (client) {
+            register_named_entity(
+              client->get_callback_name(),
+              group,
+              std::static_pointer_cast<rclcpp::sched::SchedBase>(client));
+          }
+        },
+        [&register_named_entity, &group](const rclcpp::TimerBase::SharedPtr & timer) {
+          if (timer) {
+            register_named_entity(
+              timer->get_callback_name(),
+              group,
+              std::static_pointer_cast<rclcpp::sched::SchedBase>(timer));
+          }
+        },
+        [&register_named_entity, &group](const rclcpp::Waitable::SharedPtr & waitable) {
+          if (waitable) {
+            register_named_entity(
+              waitable->get_callback_name(),
+              group,
+              std::static_pointer_cast<rclcpp::sched::SchedBase>(waitable));
+          }
+        });
+    }
+  }
+
+  if (groups_by_name.empty()) {
+    RCLCPP_WARN(
+      logger,
+      "Chain priority allocator is set but no named callbacks are registered");
+    return;
+  }
+
+  auto allocation = chain_priority_allocator_->allocate(groups_by_name);
+  for (const auto & pair : allocation.callback_priorities) {
+    const auto & callback_name = pair.first;
+    const auto priority = pair.second;
+    auto entity_it = entities_by_name.find(callback_name);
+    if (entity_it == entities_by_name.end()) {
+      RCLCPP_WARN(
+        logger,
+        "No callback entity registered for '%s'; skipping priority assignment",
+        callback_name.c_str());
+      continue;
+    }
+    auto & entity = entity_it->second;
+    if (!entity) {
+      RCLCPP_WARN(
+        logger,
+        "Callback entity for '%s' is no longer valid; skipping priority assignment",
+        callback_name.c_str());
+      continue;
+    }
+
+    entity->set_edf_attr(nullptr);
+    rclcpp::sched::SchedAttr attr = entity->sched_attr;
+    attr.sched_policy = SCHED_FIFO;
+    attr.sched_priority = priority;
+    attr.sched_flags = 0;
+    attr.sched_runtime = 0;
+    attr.sched_deadline = 0;
+    attr.sched_period = 0;
+    entity->set_sched_attr(attr);
+  }
 }

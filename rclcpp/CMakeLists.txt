@@ -195,7 +195,7 @@ target_include_directories(${PROJECT_NAME} PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>"
   "$<INSTALL_INTERFACE:include/${PROJECT_NAME}>")
 target_link_libraries(${PROJECT_NAME} ${CMAKE_THREAD_LIBS_INIT})
-target_link_libraries(${PROJECT_NAME} PUBLIC yaml-cpp)
+target_link_libraries(${PROJECT_NAME} yaml-cpp)
 # specific order: dependents before dependencies
 ament_target_dependencies(${PROJECT_NAME}
   "ament_index_cpp"

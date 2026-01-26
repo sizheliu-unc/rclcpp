@@ -33,6 +33,14 @@
 #include "rclcpp/sched_base.hpp"
 #include "rclcpp/visibility_control.hpp"
 
+namespace rclcpp
+{
+namespace detail
+{
+class ChainPriorityAllocator;
+}  // namespace detail
+}  // namespace rclcpp
+
 #include "rclcpp/cond.hpp"
 #include "rclcpp/stack.hpp"
 
@@ -90,7 +98,8 @@ public:
   /// Default constructor. See the default constructor for Executor.
   RCLCPP_PUBLIC
   explicit NoExecutor(
-    const rclcpp::ExecutorOptions & options = rclcpp::ExecutorOptions());
+    const rclcpp::ExecutorOptions & options = rclcpp::ExecutorOptions(),
+    std::shared_ptr<rclcpp::detail::ChainPriorityAllocator> chain_priority_allocator = nullptr);
 
   /// Default destructor.
   RCLCPP_PUBLIC
@@ -146,7 +155,11 @@ private:
   void
   thread_start(Executable executable);
 
+  void
+  apply_chain_priorities();
+
   std::vector<PosixTimer*> timers;
+  std::shared_ptr<rclcpp::detail::ChainPriorityAllocator> chain_priority_allocator_;
 };
 
 }  // namespace executors
