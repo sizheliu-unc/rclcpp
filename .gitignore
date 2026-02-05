@@ -10,7 +10,11 @@ log/
 !rclcpp_action/*
 !rclcpp_components/*
 !rclcpp_lifecycle/*
+!rosidl/*
 !.gitignore
 !CONTRIBUTING.md
 !LICENSE
 !README.md
+
+**/__pycache__/
+**/*.pyc
