@@ -293,7 +293,13 @@ handle_timer(int sig, siginfo_t *si, void *uc) {
   UNUSED(sig);
   UNUSED(uc);
   PosixTimer *ptimer = static_cast<PosixTimer*>(si->_sifields._rt.si_sigval.sival_ptr);
-  if (!ptimer->executor->started) {
+  if (ptimer == nullptr) {
+    return;
+  }
+  if (ptimer->executor == nullptr || !ptimer->executor->started) {
+    return;
+  }
+  if (ptimer->timer == nullptr) {
     return;
   }
   if (ptimer->timer->is_canceled()) {
@@ -334,7 +340,11 @@ NoExecutor::assign_or_create(Executable& executable) {
     return;
   }
   auto sched_base = get_sched_base(executable);
-	assert(sched_base != nullptr);
+  if (sched_base == nullptr) {
+    auto logger = rclcpp::get_logger("NoExecutor");
+    RCLCPP_ERROR(logger, "sched_base is nullptr in assign_or_create");
+    return;
+  }
 	
   idle_thread->executable = std::move(executable);
   int res = 0;
@@ -350,13 +360,29 @@ NoExecutor::assign_or_create(Executable& executable) {
   } else {
     res = sched::syscall_sched_setattr(idle_thread->pid, &sched_base->sched_attr);
   }
-	assert(res == 0);
+  if (res != 0) {
+    // Only warn once about permission issues
+    static std::atomic<bool> warned_once{false};
+    if (!warned_once.exchange(true)) {
+      auto logger = rclcpp::get_logger("NoExecutor");
+      RCLCPP_WARN(logger, 
+        "Failed to set real-time scheduling attributes (SCHED_FIFO). "
+        "This requires elevated privileges (CAP_SYS_NICE or running as root). "
+        "Node will continue with default scheduling. "
+        "To enable RT scheduling, run with 'sudo' or configure /etc/security/limits.conf");
+    }
+  }
   idle_thread->is_busy.set_val(1, true);
 }
 
 void 
 NoExecutor::create_thread(Executable executable) {
   auto sched_base = get_sched_base(executable);
+  if (sched_base == nullptr) {
+    auto logger = rclcpp::get_logger("NoExecutor");
+    RCLCPP_ERROR(logger, "sched_base is nullptr in create_thread");
+    return;
+  }
   if (sched_base->sched_entity.edf_attr) {
     if (sched_base->sched_entity.is_source) {
       struct timespec now;
@@ -511,6 +537,12 @@ NoExecutor::apply_chain_priorities()
   }
 
   auto allocation = chain_priority_allocator_->allocate(groups_by_name);
+  
+  RCLCPP_INFO(logger, "Chain priority allocation results:");
+  for (const auto & pair : allocation.callback_priorities) {
+    RCLCPP_INFO(logger, "  '%s' -> priority %d", pair.first.c_str(), pair.second);
+  }
+  
   for (const auto & pair : allocation.callback_priorities) {
     const auto & callback_name = pair.first;
     const auto priority = pair.second;
@@ -541,4 +573,5 @@ NoExecutor::apply_chain_priorities()
     attr.sched_period = 0;
     entity->set_sched_attr(attr);
   }
+  RCLCPP_INFO(logger, "Priority allocation complete");
 }
