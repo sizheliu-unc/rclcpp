@@ -238,6 +238,18 @@ inline const char * name<@(message_typename)>()
   return "@(message_fully_qualified_name)";
 }
 
+template<>
+inline uint32 get_source_id<@(message_typename)>(const @(message_typename) & msg)
+{
+  return msg.internal_rclcpp_source_id;
+}
+
+template<>
+inline void set_source_id<@(message_typename)>(@(message_typename) & msg, uint32 source_id)
+{
+  msg.internal_rclcpp_source_id = source_id;
+}
+
 @{
 fixed_template_string = 'true'
 fixed_template_strings = set()
