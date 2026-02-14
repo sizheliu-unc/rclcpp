@@ -239,15 +239,15 @@ inline const char * name<@(message_typename)>()
 }
 
 template<>
-inline uint32 get_source_id<@(message_typename)>(const @(message_typename) & msg)
+inline uint32_t get_prio<@(message_typename)>(const @(message_typename) & msg)
 {
-  return msg.internal_rclcpp_source_id;
+  return msg.internal_rclcpp_prio;
 }
 
 template<>
-inline void set_source_id<@(message_typename)>(@(message_typename) & msg, uint32 source_id)
+inline void set_prio<@(message_typename)>(@(message_typename) & msg, uint32_t prio)
 {
-  msg.internal_rclcpp_source_id = source_id;
+  msg.internal_rclcpp_prio = prio;
 }
 
 @{

@@ -156,6 +156,12 @@ template<typename T>
 inline const char * name();
 
 template<typename T>
+inline uint32_t get_prio(const T & msg);
+
+template<typename T>
+inline void set_prio(T & msg, uint32_t prio);
+
+template<typename T>
 struct has_fixed_size : std::false_type {};
 
 template<typename T>
