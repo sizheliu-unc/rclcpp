@@ -42,7 +42,7 @@ from rosidl_parser.definition import Message
 @[for message in content.get_elements_of_type(Message)]@
 @{
 TEMPLATE(
-    'msg__traits.hpp.em',
+    'msg__traits__msgonly.hpp.em',
     package_name=package_name, interface_path=interface_path, message=message,
     include_directives=include_directives)
 }@

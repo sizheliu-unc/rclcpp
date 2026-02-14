@@ -238,18 +238,6 @@ inline const char * name<@(message_typename)>()
   return "@(message_fully_qualified_name)";
 }
 
-template<>
-inline uint32_t get_prio<@(message_typename)>(const @(message_typename) & msg)
-{
-  return msg.internal_rclcpp_prio;
-}
-
-template<>
-inline void set_prio<@(message_typename)>(@(message_typename) & msg, uint32_t prio)
-{
-  msg.internal_rclcpp_prio = prio;
-}
-
 @{
 fixed_template_string = 'true'
 fixed_template_strings = set()
