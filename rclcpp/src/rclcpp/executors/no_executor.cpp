@@ -142,7 +142,7 @@ NoExecutor::execute_executable(Executable &executable) {
   switch (executable.type)
   {
   case ExecutableType::SUBSCRIPTION:
-    this->execute_subscription(executable.subscription);
+    executable.subscription->run();
     break;
   case ExecutableType::SERVICE:
     this->execute_service(executable.service);
@@ -241,7 +241,7 @@ NoExecutor::handle_subscription(rclcpp::CallbackGroup::SharedPtr callback_group,
     Executable executable;
     executable.type = ExecutableType::SUBSCRIPTION;
     executable.callback_group = callback_group;
-    executable.subscription = subscription;
+    executable.subscription = rclcpp::take_and_bundle(subscription);
     assign_or_create(executable);
   }
 }
@@ -318,7 +318,7 @@ std::shared_ptr<rclcpp::sched::SchedBase> get_sched_base(rclcpp::executors::Exec
   switch (executable.type)
   {
   case ExecutableType::SUBSCRIPTION:
-    return executable.subscription;
+    return executable.subscription->get();
   case ExecutableType::SERVICE:
     return executable.service;
   case ExecutableType::CLIENT:
@@ -329,6 +329,18 @@ std::shared_ptr<rclcpp::sched::SchedBase> get_sched_base(rclcpp::executors::Exec
     return executable.timer;
   default:
     return nullptr;
+  }
+}
+
+uint32_t get_mode_prio(rclcpp::executors::Executable& executable) {
+  switch (executable.type)
+  {
+  case ExecutableType::SUBSCRIPTION:
+    return executable.subscription->get_message_prio();
+  case ExecutableType::TIMER:
+    return executable.timer->sched_attr.sched_priority; // TODO: mode-based priority for timers
+  default:
+    return 0;
   }
 }
 
@@ -348,6 +360,7 @@ NoExecutor::assign_or_create(Executable& executable) {
 	
   idle_thread->executable = std::move(executable);
   int res = 0;
+  uint32_t mode_prio = get_mode_prio(idle_thread->executable);
   if (sched_base->sched_entity.edf_attr) {
     if (sched_base->sched_entity.is_source) {
       struct timespec now;
@@ -357,6 +370,10 @@ NoExecutor::assign_or_create(Executable& executable) {
     }
     //std::cout << "abs deadline is: " << sched_entity->edf_attr->abs_deadline << std::endl;
     res = (sched::update_deadline(idle_thread->pthread_id, sched_base->sched_entity.edf_attr) == false);
+  } else if (0 < mode_prio && mode_prio < 100) {
+    auto mode_sched_attr = sched_base->sched_attr;
+    mode_sched_attr.sched_priority = mode_prio;
+    res = sched::syscall_sched_setattr(idle_thread->pid, &mode_sched_attr);
   } else {
     res = sched::syscall_sched_setattr(idle_thread->pid, &sched_base->sched_attr);
   }

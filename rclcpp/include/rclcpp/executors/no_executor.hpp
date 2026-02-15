@@ -32,6 +32,7 @@
 #include "rclcpp/rate.hpp"
 #include "rclcpp/sched_base.hpp"
 #include "rclcpp/visibility_control.hpp"
+#include "rclcpp/bundled_subscription.hpp"
 
 namespace rclcpp
 {
@@ -61,7 +62,7 @@ enum ExecutableType {
 struct Executable {
   ExecutableType type;
   CallbackGroup::SharedPtr callback_group;
-  rclcpp::SubscriptionBase::SharedPtr subscription = nullptr;
+  std::shared_ptr<rclcpp::BundledSubscription> subscription = nullptr;
   rclcpp::ServiceBase::SharedPtr service = nullptr;
   rclcpp::ClientBase::SharedPtr client = nullptr;
   rclcpp::Waitable::SharedPtr waitable = nullptr;
@@ -73,6 +74,7 @@ struct ThreadDataNoExec {
   Executable executable;
   pthread_t pthread_id;
   pid_t pid;
+  uint32_t current_prio;
 };
 
 struct PosixTimer {

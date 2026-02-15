@@ -204,6 +204,11 @@ public:
 
   RCLCPP_PUBLIC
   virtual
+  uint32_t
+  get_message_prio(const std::shared_ptr<void> & message) = 0;
+
+  RCLCPP_PUBLIC
+  virtual
   void
   handle_serialized_message(
     const std::shared_ptr<rclcpp::SerializedMessage> & serialized_message,
@@ -213,6 +218,11 @@ public:
   virtual
   void
   handle_loaned_message(void * loaned_message, const rclcpp::MessageInfo & message_info) = 0;
+
+  RCLCPP_PUBLIC
+  virtual
+  uint32_t
+  get_loaned_message_prio(void * loaned_message) = 0;
 
   /// Return the message borrowed in create_message.
   /** \param[in] message Shared pointer to the returned message. */

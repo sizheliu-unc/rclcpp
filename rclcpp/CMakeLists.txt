@@ -114,6 +114,7 @@ set(${PROJECT_NAME}_SRCS
   src/rclcpp/utilities.cpp
   src/rclcpp/wait_set_policies/detail/write_preferring_read_write_lock.cpp
   src/rclcpp/waitable.cpp
+  src/rclcpp/bundled_subscription.cpp
 )
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
