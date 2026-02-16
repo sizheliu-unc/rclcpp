@@ -9,6 +9,7 @@
 #include <pthread.h>
 #include <atomic>
 #include <iostream>
+#include <string>
 
 #define FIFO_PATH "/proc/pure-edf"
 
@@ -128,8 +129,23 @@ public:
     virtual void
     set_edf_entity(const edf_sched_entity& sched_entity);
 
+    virtual void
+    set_callback_name(const std::string& callback_name)
+    {
+        callback_name_ = callback_name;
+    }
+
+    virtual const std::string&
+    get_callback_name() const
+    {
+        return callback_name_;
+    }
+
     SchedAttr sched_attr;
     edf_sched_entity sched_entity;
+
+protected:
+    std::string callback_name_;
 };
 
 

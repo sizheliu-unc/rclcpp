@@ -220,6 +220,10 @@ public:
   bool
   exchange_in_use_by_wait_set_state(bool in_use_state);
 
+  RCLCPP_PUBLIC
+  void
+  set_callback_name(const std::string & callback_name) override;
+
   /// Get the actual request publsher QoS settings, after the defaults have been determined.
   /**
    * The actual configuration applied when using RMW_QOS_POLICY_*_SYSTEM_DEFAULT

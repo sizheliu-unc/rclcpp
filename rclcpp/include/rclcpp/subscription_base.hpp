@@ -136,6 +136,9 @@ public:
   void
   set_edf_entity(const sched::edf_sched_entity& sched_entity) override;
 
+  void
+  set_callback_name(const std::string & callback_name) override;
+
   /// Take the next inter-process message from the subscription as a type erased pointer.
   /**
    * \sa Subscription::take() for details on how this function works.

@@ -15,6 +15,8 @@
 #include "rcpputils/scope_exit.hpp"
 
 #include <cassert>
+#include <cerrno>
+#include <cstring>
 #include <pthread.h>
 #include <stdio.h>
 #include <thread>
@@ -24,11 +26,14 @@
 #include <sched.h>
 #include <system_error>
 #include <atomic>
+#include <mutex>
 
 #include "rclcpp/callback_group.hpp"
 
 #include "rclcpp/executors/no_executor.hpp"
 #include "rclcpp/sched_base.hpp"
+#include "rclcpp/detail/chain_priority_allocator.hpp"
+#include "rclcpp/logging.hpp"
 
 #include "tracetools/tracetools.h"
 
@@ -45,8 +50,11 @@ struct itimerspec unset_timer = {};
 void 
 handle_timer(int sig, siginfo_t *si, void *uc);
 
-NoExecutor::NoExecutor(const rclcpp::ExecutorOptions & options)
-: rclcpp::Executor(options) {
+NoExecutor::NoExecutor(
+  const rclcpp::ExecutorOptions & options,
+  std::shared_ptr<rclcpp::detail::ChainPriorityAllocator> chain_priority_allocator)
+: rclcpp::Executor(options),
+  chain_priority_allocator_(std::move(chain_priority_allocator)) {
   started = false;
 }
 
@@ -56,8 +64,11 @@ NoExecutor::~NoExecutor() {
 
 void
 NoExecutor::start() {
+  auto logger = rclcpp::get_logger("NoExecutor");
+  RCLCPP_INFO(logger, "Starting NoExecutor with %zu timers", timers.size());
   pid_t cur_tid = gettid();
   for (PosixTimer *timer: timers) {
+    RCLCPP_INFO(logger, "Creating POSIX timer for period %lu ns", timer->period);
     timer_t timerId = 0;
     union sigval sigv;
     sigv.sival_ptr = (void *) timer;
@@ -67,17 +78,27 @@ NoExecutor::start() {
     sev.sigev_value = sigv;
     sev._sigev_un._tid = cur_tid;
     /* specifies the action when receiving a signal */
-    assert(timer_create(CLOCK_MONOTONIC, &sev, &timerId) == 0);
+    int create_res = timer_create(CLOCK_MONOTONIC, &sev, &timerId);
+    if (create_res != 0) {
+      RCLCPP_ERROR(logger, "Failed to create timer: %s", strerror(errno));
+    }
     timer->timerid = timerId;
+    RCLCPP_INFO(logger, "Created timer ID: %p", (void*)timerId);
   }
 
   struct sigaction sa = {};
   sa.sa_flags = (SA_SIGINFO | SA_NODEFER | SA_RESTART);
   sa.sa_sigaction = handle_timer;
   sigemptyset(&sa.sa_mask);
-  assert(sigaction(SIGRTMAX, &sa, NULL) == 0);
+  int sigaction_res = sigaction(SIGRTMAX, &sa, NULL);
+  if (sigaction_res != 0) {
+    RCLCPP_ERROR(logger, "Failed to install signal handler: %s", strerror(errno));
+  } else {
+    RCLCPP_INFO(logger, "Installed signal handler for SIGRTMAX (%d)", SIGRTMAX);
+  }
   
   started = true;
+  RCLCPP_INFO(logger, "Arming timers, starting execution...");
   for (PosixTimer *timer: timers) {
     /* specify start delay and interval */
     struct itimerspec its = {};
@@ -85,12 +106,24 @@ NoExecutor::start() {
     struct timespec it_value = {};
     it_interval.tv_nsec = timer->period % SEC_IN_NSEC;
     it_interval.tv_sec = timer->period / SEC_IN_NSEC;
-    it_value.tv_nsec = 50;
+    // Start with first expiration at 1ms to give time for setup
+    it_value.tv_nsec = 1000000;  // 1ms initial delay
     it_value.tv_sec = 0;
     its.it_interval = it_interval;
     its.it_value = it_value;
-    assert(timer_settime(timer->timerid, 0, &its, NULL) == 0);
+    RCLCPP_INFO(logger, "Arming timer %p: interval=%ld.%09ld, value=%ld.%09ld", 
+      (void*)timer->timerid,
+      (long)it_interval.tv_sec, (long)it_interval.tv_nsec,
+      (long)it_value.tv_sec, (long)it_value.tv_nsec);
+    int res = timer_settime(timer->timerid, 0, &its, NULL);
+    if (res != 0) {
+      RCLCPP_ERROR(logger, "Failed to arm timer %p (errno=%d): %s", 
+        (void*)timer->timerid, errno, strerror(errno));
+    } else {
+      RCLCPP_INFO(logger, "Successfully armed timer %p", (void*)timer->timerid);
+    }
   }
+  RCLCPP_INFO(logger, "All timers armed, entering spin loop");
 }
 
 void
@@ -168,6 +201,9 @@ NoExecutor::add_node(std::shared_ptr<rclcpp::Node> node_ptr, bool notify) {
       }
     );
   });
+
+  // Don't apply chain priorities here - wait until all nodes are added
+  // apply_chain_priorities() will be called in spin()
 }
 
 void
@@ -257,7 +293,13 @@ handle_timer(int sig, siginfo_t *si, void *uc) {
   UNUSED(sig);
   UNUSED(uc);
   PosixTimer *ptimer = static_cast<PosixTimer*>(si->_sifields._rt.si_sigval.sival_ptr);
-  if (!ptimer->executor->started) {
+  if (ptimer == nullptr) {
+    return;
+  }
+  if (ptimer->executor == nullptr || !ptimer->executor->started) {
+    return;
+  }
+  if (ptimer->timer == nullptr) {
     return;
   }
   if (ptimer->timer->is_canceled()) {
@@ -298,7 +340,11 @@ NoExecutor::assign_or_create(Executable& executable) {
     return;
   }
   auto sched_base = get_sched_base(executable);
-	assert(sched_base != nullptr);
+  if (sched_base == nullptr) {
+    auto logger = rclcpp::get_logger("NoExecutor");
+    RCLCPP_ERROR(logger, "sched_base is nullptr in assign_or_create");
+    return;
+  }
 	
   idle_thread->executable = std::move(executable);
   int res = 0;
@@ -314,13 +360,29 @@ NoExecutor::assign_or_create(Executable& executable) {
   } else {
     res = sched::syscall_sched_setattr(idle_thread->pid, &sched_base->sched_attr);
   }
-	assert(res == 0);
+  if (res != 0) {
+    // Only warn once about permission issues
+    static std::atomic<bool> warned_once{false};
+    if (!warned_once.exchange(true)) {
+      auto logger = rclcpp::get_logger("NoExecutor");
+      RCLCPP_WARN(logger, 
+        "Failed to set real-time scheduling attributes (SCHED_FIFO). "
+        "This requires elevated privileges (CAP_SYS_NICE or running as root). "
+        "Node will continue with default scheduling. "
+        "To enable RT scheduling, run with 'sudo' or configure /etc/security/limits.conf");
+    }
+  }
   idle_thread->is_busy.set_val(1, true);
 }
 
 void 
 NoExecutor::create_thread(Executable executable) {
   auto sched_base = get_sched_base(executable);
+  if (sched_base == nullptr) {
+    auto logger = rclcpp::get_logger("NoExecutor");
+    RCLCPP_ERROR(logger, "sched_base is nullptr in create_thread");
+    return;
+  }
   if (sched_base->sched_entity.edf_attr) {
     if (sched_base->sched_entity.is_source) {
       struct timespec now;
@@ -356,9 +418,160 @@ NoExecutor::thread_start(Executable executable) {
 
 void
 NoExecutor::spin() {
+  spinning.store(true);
+  RCPPUTILS_SCOPE_EXIT(this->spinning.store(false); );
+
+  {
+    std::lock_guard<std::mutex> guard{mutex_};
+    add_callback_groups_from_nodes_associated_to_executor();
+  }
+  apply_chain_priorities();
+
   start();
   while (rclcpp::ok(this->context_)) {
     sleep(600);
   }
   stop();
+}
+
+void
+NoExecutor::apply_chain_priorities()
+{
+  if (!chain_priority_allocator_) {
+    return;
+  }
+
+  std::unordered_map<std::string, rclcpp::CallbackGroup::SharedPtr> groups_by_name;
+  std::unordered_map<std::string, std::shared_ptr<rclcpp::sched::SchedBase>> entities_by_name;
+
+  const auto logger = rclcpp::get_logger("NoExecutor");
+  auto register_named_entity =
+    [&groups_by_name, &entities_by_name, logger](
+    const std::string & name,
+    const rclcpp::CallbackGroup::SharedPtr & callback_group,
+    const std::shared_ptr<rclcpp::sched::SchedBase> & entity)
+    {
+      if (name.empty() || !callback_group || !entity) {
+        if (name.empty() && entity) {
+          RCLCPP_DEBUG(logger, "Skipping entity with empty callback name");
+        }
+        return;
+      }
+      RCLCPP_INFO(logger, "Registering callback: '%s'", name.c_str());
+      auto [entity_it, inserted] = entities_by_name.emplace(name, entity);
+      if (!inserted) {
+        RCLCPP_WARN(
+          logger,
+          "Duplicate callback name '%s'; keeping first registration",
+          name.c_str());
+        return;
+      }
+      groups_by_name.emplace(name, callback_group);
+    };
+
+  {
+    std::lock_guard<std::mutex> guard{mutex_};
+    for (const auto & pair : weak_groups_to_nodes_) {
+      auto group = pair.first.lock();
+      if (!group) {
+        continue;
+      }
+      group->collect_all_ptrs(
+        [&register_named_entity, &group, &logger](const rclcpp::SubscriptionBase::SharedPtr & subscription) {
+          if (subscription) {
+            auto callback_name = subscription->get_callback_name();
+            RCLCPP_DEBUG(logger, "Found subscription with callback name: '%s'", callback_name.c_str());
+            register_named_entity(
+              callback_name,
+              group,
+              std::static_pointer_cast<rclcpp::sched::SchedBase>(subscription));
+          }
+        },
+        [&register_named_entity, &group](const rclcpp::ServiceBase::SharedPtr & service) {
+          if (service) {
+            register_named_entity(
+              service->get_callback_name(),
+              group,
+              std::static_pointer_cast<rclcpp::sched::SchedBase>(service));
+          }
+        },
+        [&register_named_entity, &group](const rclcpp::ClientBase::SharedPtr & client) {
+          if (client) {
+            register_named_entity(
+              client->get_callback_name(),
+              group,
+              std::static_pointer_cast<rclcpp::sched::SchedBase>(client));
+          }
+        },
+        [&register_named_entity, &group, &logger](const rclcpp::TimerBase::SharedPtr & timer) {
+          if (timer) {
+            auto callback_name = timer->get_callback_name();
+            RCLCPP_DEBUG(logger, "Found timer with callback name: '%s'", callback_name.c_str());
+            register_named_entity(
+              callback_name,
+              group,
+              std::static_pointer_cast<rclcpp::sched::SchedBase>(timer));
+          }
+        },
+        [&register_named_entity, &group](const rclcpp::Waitable::SharedPtr & waitable) {
+          if (waitable) {
+            register_named_entity(
+              waitable->get_callback_name(),
+              group,
+              std::static_pointer_cast<rclcpp::sched::SchedBase>(waitable));
+          }
+        });
+    }
+  }
+
+  RCLCPP_INFO(logger, "Collected %zu named callbacks", groups_by_name.size());
+  for (const auto & pair : groups_by_name) {
+    RCLCPP_INFO(logger, "  - '%s'", pair.first.c_str());
+  }
+
+  if (groups_by_name.empty()) {
+    RCLCPP_WARN(
+      logger,
+      "Chain priority allocator is set but no named callbacks are registered");
+    return;
+  }
+
+  auto allocation = chain_priority_allocator_->allocate(groups_by_name);
+  
+  RCLCPP_INFO(logger, "Chain priority allocation results:");
+  for (const auto & pair : allocation.callback_priorities) {
+    RCLCPP_INFO(logger, "  '%s' -> priority %d", pair.first.c_str(), pair.second);
+  }
+  
+  for (const auto & pair : allocation.callback_priorities) {
+    const auto & callback_name = pair.first;
+    const auto priority = pair.second;
+    auto entity_it = entities_by_name.find(callback_name);
+    if (entity_it == entities_by_name.end()) {
+      RCLCPP_WARN(
+        logger,
+        "No callback entity registered for '%s'; skipping priority assignment",
+        callback_name.c_str());
+      continue;
+    }
+    auto & entity = entity_it->second;
+    if (!entity) {
+      RCLCPP_WARN(
+        logger,
+        "Callback entity for '%s' is no longer valid; skipping priority assignment",
+        callback_name.c_str());
+      continue;
+    }
+
+    entity->set_edf_attr(nullptr);
+    rclcpp::sched::SchedAttr attr = entity->sched_attr;
+    attr.sched_policy = SCHED_FIFO;
+    attr.sched_priority = priority;
+    attr.sched_flags = 0;
+    attr.sched_runtime = 0;
+    attr.sched_deadline = 0;
+    attr.sched_period = 0;
+    entity->set_sched_attr(attr);
+  }
+  RCLCPP_INFO(logger, "Priority allocation complete");
 }

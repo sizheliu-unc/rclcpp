@@ -208,6 +208,7 @@ public:
   virtual void
   add_node(std::shared_ptr<rclcpp::Node> node_ptr, bool notify = true);
 
+
   /// Remove a node from the executor.
   /**
    * Any callback groups automatically added when this node was added with
@@ -532,6 +533,7 @@ protected:
   RCLCPP_PUBLIC
   virtual void
   add_callback_groups_from_nodes_associated_to_executor() RCPPUTILS_TSA_REQUIRES(mutex_);
+
 
   /// Spinning state, used to prevent multi threaded calls to spin and to cancel blocking spins.
   std::atomic_bool spinning;

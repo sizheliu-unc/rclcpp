@@ -17,6 +17,7 @@
 #include <map>
 #include <string>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -24,11 +25,13 @@
 #include "rcl/error_handling.h"
 #include "rcpputils/scope_exit.hpp"
 
+#include "rclcpp/detail/chain_priority_allocator.hpp"
 #include "rclcpp/exceptions.hpp"
 #include "rclcpp/executor.hpp"
 #include "rclcpp/guard_condition.hpp"
 #include "rclcpp/memory_strategy.hpp"
 #include "rclcpp/node.hpp"
+#include "rclcpp/sched_base.hpp"
 #include "rclcpp/utilities.hpp"
 
 #include "rcutils/logging_macros.h"
@@ -259,22 +262,25 @@ Executor::add_node(rclcpp::node_interfaces::NodeBaseInterface::SharedPtr node_pt
             std::string("Node '") + node_ptr->get_fully_qualified_name() +
             "' has already been added to an executor.");
   }
-  std::lock_guard<std::mutex> guard{mutex_};
-  node_ptr->for_each_callback_group(
-    [this, node_ptr, notify](rclcpp::CallbackGroup::SharedPtr group_ptr)
-    {
-      if (!group_ptr->get_associated_with_executor_atomic().load() &&
-      group_ptr->automatically_add_to_executor_with_node())
-      {
-        this->add_callback_group_to_map(
-          group_ptr,
-          node_ptr,
-          weak_groups_to_nodes_associated_with_executor_,
-          notify);
-      }
-    });
 
-  weak_nodes_.push_back(node_ptr);
+  {
+    std::lock_guard<std::mutex> guard{mutex_};
+    node_ptr->for_each_callback_group(
+      [this, node_ptr, notify](rclcpp::CallbackGroup::SharedPtr group_ptr)
+      {
+        if (!group_ptr->get_associated_with_executor_atomic().load() &&
+        group_ptr->automatically_add_to_executor_with_node())
+        {
+          this->add_callback_group_to_map(
+            group_ptr,
+            node_ptr,
+            weak_groups_to_nodes_associated_with_executor_,
+            notify);
+        }
+      });
+
+    weak_nodes_.push_back(node_ptr);
+  }
 }
 
 void
@@ -337,6 +343,7 @@ Executor::add_node(std::shared_ptr<rclcpp::Node> node_ptr, bool notify)
 {
   this->add_node(node_ptr->get_node_base_interface(), notify);
 }
+
 
 void
 Executor::remove_node(rclcpp::node_interfaces::NodeBaseInterface::SharedPtr node_ptr, bool notify)
