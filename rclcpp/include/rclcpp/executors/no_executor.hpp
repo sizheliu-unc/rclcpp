@@ -166,17 +166,22 @@ public:
   RCLCPP_PUBLIC
   void
   set_timer_period_config(const std::unordered_map<std::string, int64_t> & config);
+protected:
+  void
+  apply_chain_priorities();
+
+  std::shared_ptr<rclcpp::detail::ChainPriorityAllocator> chain_priority_allocator_;
 
 private:
-  void 
+  void
   handle_subscription(rclcpp::CallbackGroup::SharedPtr callback_group, const rclcpp::SubscriptionBase::SharedPtr &subscription, size_t num_msgs);
 
   void
   handle_service(rclcpp::CallbackGroup::SharedPtr callback_group, const rclcpp::ServiceBase::SharedPtr &service, size_t num_msgs);
-  
+
   void
-  handle_client(rclcpp::CallbackGroup::SharedPtr callback_group, const rclcpp::ClientBase::SharedPtr &client, size_t num_msgs); 
-  
+  handle_client(rclcpp::CallbackGroup::SharedPtr callback_group, const rclcpp::ClientBase::SharedPtr &client, size_t num_msgs);
+
   void
   handle_waitable(rclcpp::CallbackGroup::SharedPtr callback_group, const rclcpp::Waitable::SharedPtr &waitable, size_t num_msgs);
 
@@ -184,9 +189,6 @@ private:
   create_thread(Executable executable);
   void
   thread_start(Executable executable);
-
-  void
-  apply_chain_priorities();
 
   std::vector<PosixTimer*> timers;
   std::shared_ptr<rclcpp::detail::ChainPriorityAllocator> chain_priority_allocator_;
