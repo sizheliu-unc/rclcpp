@@ -63,6 +63,32 @@ NoExecutor::~NoExecutor() {
 }
 
 void
+NoExecutor::set_timer_period(const std::string & name, int64_t period_ns) {
+  auto it = timer_period_config_.find(name);
+  if (it != timer_period_config_.end()) {
+    it->second.store(period_ns);
+  } else {
+    timer_period_config_[name].store(period_ns);
+  }
+}
+
+int64_t
+NoExecutor::get_timer_period(const std::string & name) const {
+  auto it = timer_period_config_.find(name);
+  if (it != timer_period_config_.end()) {
+    return it->second.load();
+  }
+  return 0;  
+}
+
+void
+NoExecutor::set_timer_period_config(const std::unordered_map<std::string, int64_t> & config) {
+  for (const auto & pair : config) {
+    timer_period_config_[pair.first].store(pair.second);
+  }
+}
+
+void
 NoExecutor::start() {
   auto logger = rclcpp::get_logger("NoExecutor");
   RCLCPP_INFO(logger, "Starting NoExecutor with %zu timers", timers.size());
@@ -194,7 +220,21 @@ NoExecutor::add_node(std::shared_ptr<rclcpp::Node> node_ptr, bool notify) {
         client->set_on_new_response_callback(std::bind(&NoExecutor::handle_client, this, callback_group, client, _1));
       },
       [this, &callback_group](const rclcpp::TimerBase::SharedPtr &timer) {
-        this->timers.push_back(new PosixTimer({this, get_period_from_timer(timer), timer, callback_group, 0, this->timers.size()}));
+        std::string timer_name = timer->get_timer_name();
+        
+        int64_t period = 0;
+        auto config_it = timer_period_config_.find(timer_name);
+        if (config_it != timer_period_config_.end()) {
+          period = config_it->second.load();
+        } else {
+          period = get_period_from_timer(timer);
+          timer_period_config_[timer_name].store(period);
+        }
+        
+        std::atomic<int64_t>* period_ptr = &timer_period_config_[timer_name];
+        timer_period_map_[timer.get()] = period_ptr;
+        
+        this->timers.push_back(new PosixTimer({this, static_cast<uint64_t>(period), period_ptr, timer, callback_group, 0, this->timers.size()}));
       },
       [this, &callback_group](const rclcpp::Waitable::SharedPtr &waitable) {
         waitable->set_on_ready_callback(std::bind(&NoExecutor::handle_waitable, this, callback_group, waitable, _1));
@@ -306,6 +346,23 @@ handle_timer(int sig, siginfo_t *si, void *uc) {
     timer_settime(ptimer->timerid, 0, &unset_timer, NULL);
     return;
   }
+  
+  if (ptimer->period_ptr != nullptr) {
+    int64_t new_period = ptimer->period_ptr->load();
+    if (new_period != static_cast<int64_t>(ptimer->period) && new_period > 0) {
+      struct itimerspec its = {};
+      its.it_interval.tv_nsec = new_period % SEC_IN_NSEC;
+      its.it_interval.tv_sec = new_period / SEC_IN_NSEC;
+      its.it_value.tv_nsec = new_period % SEC_IN_NSEC;
+      its.it_value.tv_sec = new_period / SEC_IN_NSEC;
+      
+      int res = timer_settime(ptimer->timerid, 0, &its, NULL);
+      if (res == 0) {
+        ptimer->period = static_cast<uint64_t>(new_period);
+      }
+    }
+  }
+  
   Executable executable;
   executable.type = ExecutableType::TIMER;
   executable.callback_group = ptimer->callback_group;
