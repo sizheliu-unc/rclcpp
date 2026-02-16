@@ -22,7 +22,7 @@ namespace executors
 /**
  * Each mode is defined by a YAML file specifying callback chains with deadlines/periods.
  * A user-provided mode tester function maps application state to the desired mode.
- * Calling modeUpdate() checks the state and, if the mode has changed, re-applies
+ * Calling mode_update() checks the state and, if the mode has changed, re-applies
  * the corresponding chain priorities.
  *
  * \tparam StateT  The application state type passed to the mode tester function.
@@ -94,7 +94,7 @@ public:
    *
    * \param[in] state  The current application state to evaluate.
    */
-  void modeUpdate(const StateT & state)
+  void mode_update(const StateT & state)
   {
     ModeEnumT target_mode = mode_tester_(state);
 
@@ -107,7 +107,7 @@ public:
       const auto logger = rclcpp::get_logger("ModeAwareExecutor");
       RCLCPP_ERROR(
         logger,
-        "modeUpdate: target mode not found in mode_allocators_; ignoring switch");
+        "mode_update: target mode not found in mode_allocators_; ignoring switch");
       return;
     }
 
@@ -121,7 +121,7 @@ public:
   }
 
   /// Return the currently active mode.
-  ModeEnumT getCurrentMode() const
+  ModeEnumT get_current_mode() const
   {
     return current_mode_;
   }
