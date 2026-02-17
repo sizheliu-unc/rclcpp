@@ -466,21 +466,6 @@ SubscriptionBase::set_sched_attr(const sched::SchedAttr& sched_attr) {
   }
 }
 
-void
-SubscriptionBase::set_edf_attr(sched::PureEDF* edf_attr) {  
-  this->sched_entity.edf_attr = edf_attr;
-  if (use_intra_process_) {
-    this->subscription_intra_process_->sched_entity.edf_attr = edf_attr;
-  }
-}
-
-void
-SubscriptionBase::set_edf_entity(const sched::edf_sched_entity& sched_entity) {  
-  this->sched_entity = sched_entity;
-  if (use_intra_process_) {
-    this->subscription_intra_process_->sched_entity = sched_entity;
-  }
-}
 
 void
 SubscriptionBase::set_callback_name(const std::string & callback_name) {

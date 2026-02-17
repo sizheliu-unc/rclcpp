@@ -28,10 +28,9 @@ using rclcpp::TimerBase;
 
 TimerBase::TimerBase(
   rclcpp::Clock::SharedPtr clock,
-  const std::string & timer_name,
   rclcpp::Context::SharedPtr context,
   std::chrono::nanoseconds period)
-: clock_(clock), timer_handle_(nullptr), priority_(0), timer_name_(timer_name)
+: clock_(clock), timer_handle_(nullptr), priority_(0)
 {
   if (nullptr == context) {
     context = rclcpp::contexts::get_global_default_context();
@@ -144,12 +143,6 @@ void
 TimerBase::set_callback_name(const std::string & callback_name)
 {
   rclcpp::sched::SchedBase::set_callback_name(callback_name);
-}
-
-std::string
-TimerBase::get_timer_name() const
-{
-  return timer_name_;
 }
 
 int

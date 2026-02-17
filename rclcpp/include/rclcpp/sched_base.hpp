@@ -2,16 +2,11 @@
 #define RCLCPP__SCHED_BASE_HPP_
 #include <sched.h>
 #include <sys/syscall.h>
-#include <fcntl.h>
-#include <unistd.h>
 #include <stdint.h>
 #include <cstring>
 #include <pthread.h>
 #include <atomic>
-#include <iostream>
 #include <string>
-
-#define FIFO_PATH "/proc/pure-edf"
 
 #if defined(__x86_64__) || defined(_M_X64)
     #define PADDING_SIZE 90
@@ -84,37 +79,6 @@ syscall_sched_setattr(pid_t pid, SchedAttr* sched_attr) {
     return syscall(SYS_sched_setattr, pid, sched_attr, 0);
 }
 
-namespace {
-    struct EDF_attr_struct {
-        pid_t pid;
-        uint64_t abs_deadline;
-    };
-}
-
-
-class PureEDF {
-public:
-    static bool pure_edf_init() {
-        pure_edf_fd = open(FIFO_PATH, O_WRONLY);
-        return pure_edf_fd != -1;
-    }
-    static void pure_edf_deinit() {
-        close(pure_edf_fd);
-    }
-    uint64_t abs_deadline;
-    friend bool update_deadline(pthread_t pthread_id, PureEDF* edf_attr);
-private:
-    static int pure_edf_fd;
-};
-
-bool update_deadline(pthread_t pthread_id, PureEDF* edf_attr);
-
-struct edf_sched_entity {
-    uint64_t relative_deadline;
-    PureEDF* edf_attr = nullptr;
-    bool is_source = false;
-};
-
 class SchedBase {
 friend class executors::SingleThreadedExecutor;
 friend class executors::NoExecutor;
@@ -122,12 +86,6 @@ public:
     virtual ~SchedBase() = default;
     virtual void
     set_sched_attr(const SchedAttr& sched_attr);
-
-    virtual void
-    set_edf_attr(PureEDF* edf_attr);
-
-    virtual void
-    set_edf_entity(const edf_sched_entity& sched_entity);
 
     virtual void
     set_callback_name(const std::string& callback_name)
@@ -142,7 +100,6 @@ public:
     }
 
     SchedAttr sched_attr;
-    edf_sched_entity sched_entity;
 
 protected:
     std::string callback_name_;

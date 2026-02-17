@@ -220,7 +220,8 @@ NoExecutor::add_node(std::shared_ptr<rclcpp::Node> node_ptr, bool notify) {
         client->set_on_new_response_callback(std::bind(&NoExecutor::handle_client, this, callback_group, client, _1));
       },
       [this, &callback_group](const rclcpp::TimerBase::SharedPtr &timer) {
-        std::string timer_name = timer->get_timer_name();
+        //using cb name as key in map
+        std::string timer_name = timer->get_callback_name();
         
         int64_t period = 0;
         auto config_it = timer_period_config_.find(timer_name);
@@ -404,19 +405,7 @@ NoExecutor::assign_or_create(Executable& executable) {
   }
 	
   idle_thread->executable = std::move(executable);
-  int res = 0;
-  if (sched_base->sched_entity.edf_attr) {
-    if (sched_base->sched_entity.is_source) {
-      struct timespec now;
-      clock_gettime(CLOCK_MONOTONIC, &now);
-      //std::cout << "time in sec: " << now.tv_sec << std::endl;
-      sched_base->sched_entity.edf_attr->abs_deadline = (uint64_t) now.tv_sec * SEC_IN_NSEC + now.tv_nsec + sched_base->sched_entity.relative_deadline;
-    }
-    //std::cout << "abs deadline is: " << sched_entity->edf_attr->abs_deadline << std::endl;
-    res = (sched::update_deadline(idle_thread->pthread_id, sched_base->sched_entity.edf_attr) == false);
-  } else {
-    res = sched::syscall_sched_setattr(idle_thread->pid, &sched_base->sched_attr);
-  }
+  int res = sched::syscall_sched_setattr(idle_thread->pid, &sched_base->sched_attr);
   if (res != 0) {
     // Only warn once about permission issues
     static std::atomic<bool> warned_once{false};
@@ -440,21 +429,9 @@ NoExecutor::create_thread(Executable executable) {
     RCLCPP_ERROR(logger, "sched_base is nullptr in create_thread");
     return;
   }
-  if (sched_base->sched_entity.edf_attr) {
-    if (sched_base->sched_entity.is_source) {
-      struct timespec now;
-      clock_gettime(CLOCK_MONOTONIC, &now);
-      //std::cout << "time in sec: " << now.tv_sec << std::endl;
-      sched_base->sched_entity.edf_attr->abs_deadline = (uint64_t) now.tv_sec * SEC_IN_NSEC + now.tv_nsec + sched_base->sched_entity.relative_deadline;
-    }
-    std::thread new_thread(std::bind(&NoExecutor::thread_start, this, std::move(executable)));
-    sched::update_deadline(new_thread.native_handle(), sched_base->sched_entity.edf_attr);
-    new_thread.detach();
-  } else {
-    std::thread new_thread(std::bind(&NoExecutor::thread_start, this, std::move(executable)));
-    sched::syscall_sched_setattr(sched::get_pid(new_thread.native_handle()), &sched_base->sched_attr);
-    new_thread.detach();
-  }
+  std::thread new_thread(std::bind(&NoExecutor::thread_start, this, std::move(executable)));
+  sched::syscall_sched_setattr(sched::get_pid(new_thread.native_handle()), &sched_base->sched_attr);
+  new_thread.detach();
 }
 
 void
@@ -620,14 +597,10 @@ NoExecutor::apply_chain_priorities()
       continue;
     }
 
-    entity->set_edf_attr(nullptr);
     rclcpp::sched::SchedAttr attr = entity->sched_attr;
     attr.sched_policy = SCHED_FIFO;
     attr.sched_priority = priority;
     attr.sched_flags = 0;
-    attr.sched_runtime = 0;
-    attr.sched_deadline = 0;
-    attr.sched_period = 0;
     entity->set_sched_attr(attr);
   }
   RCLCPP_INFO(logger, "Priority allocation complete");

@@ -53,14 +53,12 @@ public:
   /// TimerBase constructor
   /**
    * \param clock A clock to use for time and sleeping
-   * \param timer_name The name of the timer for period lookup
    * \param context node context
-   * \param period The initial interval at which the timer fires (optional, defaults to 0)
+   * \param period The initial interval at which the timer fires (optional, defaults to 0).
    */
   RCLCPP_PUBLIC
   explicit TimerBase(
     Clock::SharedPtr clock,
-    const std::string & timer_name,
     rclcpp::Context::SharedPtr context,
     std::chrono::nanoseconds period = std::chrono::nanoseconds(0));
 
@@ -158,13 +156,6 @@ public:
   exchange_in_use_by_wait_set_state(bool in_use_state);
 
   /**
-   * \return The name of the timer
-   */
-  RCLCPP_PUBLIC
-  std::string
-  get_timer_name() const;
-
-  /**
    * \return The priority of the timer
    */
   RCLCPP_PUBLIC
@@ -184,7 +175,6 @@ protected:
 
   std::atomic<bool> in_use_by_wait_set_{false};
   std::atomic<int> priority_{0};
-  std::string timer_name_;
 };
 
 
@@ -207,18 +197,18 @@ public:
   /// Default constructor.
   /**
    * \param[in] clock The clock providing the current time.
-   * \param[in] timer_name The name of the timer for period lookup.
    * \param[in] callback User-specified callback function.
    * \param[in] context custom context to be used.
    * \param[in] period The initial interval at which the timer fires (optional).
    */
   explicit GenericTimer(
-    Clock::SharedPtr clock, const std::string & timer_name, FunctorT && callback,
+    Clock::SharedPtr clock, FunctorT && callback,
     rclcpp::Context::SharedPtr context,
     std::chrono::nanoseconds period = std::chrono::nanoseconds(0)
   )
-  : TimerBase(clock, timer_name, context, period), callback_(std::forward<FunctorT>(callback))
+  : TimerBase(clock, context, period), callback_(std::forward<FunctorT>(callback))
   {
+    set_callback_name(tracetools::get_symbol(callback_));
     TRACEPOINT(
       rclcpp_timer_callback_added,
       static_cast<const void *>(get_timer_handle().get()),
@@ -317,18 +307,16 @@ public:
 
   /// Wall timer constructor
   /**
-   * \param timer_name The name of the timer for period lookup
    * \param callback The callback function to execute every interval
    * \param context node context
    * \param period The initial interval at which the timer fires (optional)
    */
   WallTimer(
-    const std::string & timer_name,
     FunctorT && callback,
     rclcpp::Context::SharedPtr context,
     std::chrono::nanoseconds period = std::chrono::nanoseconds(0))
   : GenericTimer<FunctorT>(
-      std::make_shared<Clock>(RCL_STEADY_TIME), timer_name, std::move(callback), context, period)
+      std::make_shared<Clock>(RCL_STEADY_TIME), std::move(callback), context, period)
   {}
 
 protected:
