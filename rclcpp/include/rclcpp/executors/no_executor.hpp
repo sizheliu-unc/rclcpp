@@ -170,6 +170,32 @@ protected:
   void
   apply_chain_priorities();
 
+  /// Container for named callback entities collected from registered nodes.
+  /// groups_by_name is passed to ChainPriorityAllocator::allocate().
+  /// entities_by_name is used to read/write sched_attr on individual callbacks.
+  struct NamedEntities {
+    std::unordered_map<std::string, rclcpp::CallbackGroup::SharedPtr> groups_by_name;
+    std::unordered_map<std::string, std::shared_ptr<rclcpp::sched::SchedBase>> entities_by_name;
+  };
+
+  /// Collect all named callback entities from registered nodes.
+  NamedEntities
+  collect_named_entities();
+
+  /// Apply a SchedAttr to a single entity (clears EDF, sets sched_attr).
+  static void
+  apply_sched_attr_to_entity(
+    const std::shared_ptr<rclcpp::sched::SchedBase> & entity,
+    const rclcpp::sched::SchedAttr & attr);
+
+  /// Build a SCHED_FIFO attr with given priority.
+  static rclcpp::sched::SchedAttr
+  make_fifo_attr(uint32_t priority);
+
+  /// Build a SCHED_OTHER (best-effort) attr.
+  static rclcpp::sched::SchedAttr
+  make_other_attr();
+
   std::shared_ptr<rclcpp::detail::ChainPriorityAllocator> chain_priority_allocator_;
 
 private:

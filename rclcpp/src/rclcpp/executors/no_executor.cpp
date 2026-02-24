@@ -488,19 +488,14 @@ NoExecutor::spin() {
   stop();
 }
 
-void
-NoExecutor::apply_chain_priorities()
+NoExecutor::NamedEntities
+NoExecutor::collect_named_entities()
 {
-  if (!chain_priority_allocator_) {
-    return;
-  }
-
-  std::unordered_map<std::string, rclcpp::CallbackGroup::SharedPtr> groups_by_name;
-  std::unordered_map<std::string, std::shared_ptr<rclcpp::sched::SchedBase>> entities_by_name;
-
+  NamedEntities named;
   const auto logger = rclcpp::get_logger("NoExecutor");
+
   auto register_named_entity =
-    [&groups_by_name, &entities_by_name, logger](
+    [&named, logger](
     const std::string & name,
     const rclcpp::CallbackGroup::SharedPtr & callback_group,
     const std::shared_ptr<rclcpp::sched::SchedBase> & entity)
@@ -512,7 +507,7 @@ NoExecutor::apply_chain_priorities()
         return;
       }
       RCLCPP_INFO(logger, "Registering callback: '%s'", name.c_str());
-      auto [entity_it, inserted] = entities_by_name.emplace(name, entity);
+      auto [entity_it, inserted] = named.entities_by_name.emplace(name, entity);
       if (!inserted) {
         RCLCPP_WARN(
           logger,
@@ -520,7 +515,7 @@ NoExecutor::apply_chain_priorities()
           name.c_str());
         return;
       }
-      groups_by_name.emplace(name, callback_group);
+      named.groups_by_name.emplace(name, callback_group);
     };
 
   {
@@ -578,30 +573,83 @@ NoExecutor::apply_chain_priorities()
     }
   }
 
-  RCLCPP_INFO(logger, "Collected %zu named callbacks", groups_by_name.size());
-  for (const auto & pair : groups_by_name) {
+  RCLCPP_INFO(logger, "Collected %zu named callbacks", named.groups_by_name.size());
+  for (const auto & pair : named.groups_by_name) {
     RCLCPP_INFO(logger, "  - '%s'", pair.first.c_str());
   }
 
-  if (groups_by_name.empty()) {
+  return named;
+}
+
+rclcpp::sched::SchedAttr
+NoExecutor::make_fifo_attr(uint32_t priority)
+{
+  rclcpp::sched::SchedAttr attr{};
+  attr.size = sizeof(rclcpp::sched::SchedAttr);
+  attr.sched_policy = SCHED_FIFO;
+  attr.sched_priority = priority;
+  attr.sched_flags = 0;
+  attr.sched_nice = 0;
+  attr.sched_runtime = 0;
+  attr.sched_deadline = 0;
+  attr.sched_period = 0;
+  return attr;
+}
+
+rclcpp::sched::SchedAttr
+NoExecutor::make_other_attr()
+{
+  rclcpp::sched::SchedAttr attr{};
+  attr.size = sizeof(rclcpp::sched::SchedAttr);
+  attr.sched_policy = SCHED_OTHER;
+  attr.sched_priority = 0;
+  attr.sched_nice = 0;
+  attr.sched_flags = 0;
+  attr.sched_runtime = 0;
+  attr.sched_deadline = 0;
+  attr.sched_period = 0;
+  return attr;
+}
+
+void
+NoExecutor::apply_sched_attr_to_entity(
+  const std::shared_ptr<rclcpp::sched::SchedBase> & entity,
+  const rclcpp::sched::SchedAttr & attr)
+{
+  entity->set_edf_attr(nullptr);
+  entity->set_sched_attr(attr);
+}
+
+void
+NoExecutor::apply_chain_priorities()
+{
+  if (!chain_priority_allocator_) {
+    return;
+  }
+
+  auto named = collect_named_entities();
+
+  const auto logger = rclcpp::get_logger("NoExecutor");
+
+  if (named.groups_by_name.empty()) {
     RCLCPP_WARN(
       logger,
       "Chain priority allocator is set but no named callbacks are registered");
     return;
   }
 
-  auto allocation = chain_priority_allocator_->allocate(groups_by_name);
-  
+  auto allocation = chain_priority_allocator_->allocate(named.groups_by_name);
+
   RCLCPP_INFO(logger, "Chain priority allocation results:");
   for (const auto & pair : allocation.callback_priorities) {
     RCLCPP_INFO(logger, "  '%s' -> priority %d", pair.first.c_str(), pair.second);
   }
-  
+
   for (const auto & pair : allocation.callback_priorities) {
     const auto & callback_name = pair.first;
     const auto priority = pair.second;
-    auto entity_it = entities_by_name.find(callback_name);
-    if (entity_it == entities_by_name.end()) {
+    auto entity_it = named.entities_by_name.find(callback_name);
+    if (entity_it == named.entities_by_name.end()) {
       RCLCPP_WARN(
         logger,
         "No callback entity registered for '%s'; skipping priority assignment",
