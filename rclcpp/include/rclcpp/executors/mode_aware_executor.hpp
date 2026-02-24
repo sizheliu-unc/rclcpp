@@ -177,9 +177,18 @@ public:
       return;
     }
 
-    // Step 2: Compute old and new priority allocations
-    auto old_allocation = mode_allocators_[old_mode]->allocate(named.groups_by_name);
+    // Step 2: Compute new priority allocations and use cache for old allocation
+    rclcpp::detail::ChainPriorityAllocation old_allocation;
+    auto cache_it = mode_allocation_cache_.find(old_mode);
+    if (cache_it != mode_allocation_cache_.end()) {
+      old_allocation = cache_it->second;
+    } else {
+      old_allocation = mode_allocators_[old_mode]->allocate(named.groups_by_name);
+      mode_allocation_cache_[old_mode] = old_allocation;
+    }
+
     auto new_allocation = alloc_it->second->allocate(named.groups_by_name);
+    mode_allocation_cache_[target_mode] = new_allocation;
 
     // Step 3: Determine callback sets for each mode
     auto old_cbs = get_callback_names_for_mode(old_mode);
@@ -366,6 +375,7 @@ private:
   // (referenced by allocators) outlive the allocators during destruction.
   std::map<ModeEnumT, std::unordered_map<std::string, rclcpp::userChain>> mode_chains_;
   std::map<ModeEnumT, std::shared_ptr<rclcpp::detail::ChainPriorityAllocator>> mode_allocators_;
+  std::map<ModeEnumT, rclcpp::detail::ChainPriorityAllocation> mode_allocation_cache_;
 
   ModeTesterFn mode_tester_;
   ModeEnumT current_mode_;
