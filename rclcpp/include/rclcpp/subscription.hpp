@@ -349,6 +349,13 @@ public:
     }
   }
 
+  uint32_t
+  get_message_prio(const std::shared_ptr<void> & message ) override
+  {
+    auto typed_message = std::static_pointer_cast<ROSMessageType>(message);
+    return rosidl_generator_traits::get_prio(*typed_message);
+  }
+
   void
   handle_serialized_message(
     const std::shared_ptr<rclcpp::SerializedMessage> & serialized_message,
@@ -388,6 +395,13 @@ public:
       const auto time = rclcpp::Time(nanos.time_since_epoch().count());
       subscription_topic_statistics_->handle_message(*typed_message, time);
     }
+  }
+
+  uint32_t
+  get_loaned_message_prio(void * loaned_message) override
+  {
+    auto typed_message = static_cast<ROSMessageType *>(loaned_message);
+    return rosidl_generator_traits::get_prio(*typed_message);
   }
 
   /// Return the borrowed message.

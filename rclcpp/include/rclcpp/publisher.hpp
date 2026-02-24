@@ -232,6 +232,37 @@ public:
       this->get_ros_message_type_allocator());
   }
 
+  template<typename T>
+  void publish_as_source(T && message, rclcpp::TimerBase::SharedPtr & source)
+  {
+    this->publish(message, source->sched_attr.sched_priority); // TODO: use mode-based priority for timers
+  }
+
+  template<typename T, typename InheritedMessage>
+  void publish_as_intermediate(T && message, std::unique_ptr<InheritedMessage> inherited_message)
+  {
+    uint32_t inherited_prio = rosidl_generator_traits::get_prio(*inherited_message);
+    this->publish(message, inherited_prio);
+  }
+
+  template<typename T, typename InheritedMessage>
+  void publish_as_intermediate(T && message, const InheritedMessage & inherited_message)
+  {
+    uint32_t inherited_prio = rosidl_generator_traits::get_prio(inherited_message);
+    this->publish(message, inherited_prio);
+  }
+
+  template<typename T, typename InheritedMessage>
+  void publish_as_intermediate(T && message, std::shared_ptr<InheritedMessage> inherited_message)
+  {
+    uint32_t inherited_prio = rosidl_generator_traits::get_prio(*inherited_message);
+    this->publish(message, inherited_prio);
+  }
+
+  // NOTE: impossible to extract from type adapted source message. Would need big refactor to support. Would need to update callback signatures to accomdate them....
+  // NOTE: Above type signatures cannot verify full type info of source message. Linker can fail if user makes mistakes.
+  // NOTE: Serialized messages currently unsupported.
+
   /// Publish a message on the topic.
   /**
    * This signature is enabled if the element_type of the std::unique_ptr is
@@ -248,8 +279,9 @@ public:
     rosidl_generator_traits::is_message<T>::value &&
     std::is_same<T, ROSMessageType>::value
   >
-  publish(std::unique_ptr<T, ROSMessageTypeDeleter> msg)
+  publish(std::unique_ptr<T, ROSMessageTypeDeleter> msg, uint32_t inject_prio = 0)
   {
+    rosidl_generator_traits::set_prio(*msg, inject_prio);
     if (!intra_process_is_enabled_) {
       this->do_inter_process_publish(*msg);
       return;
@@ -305,6 +337,39 @@ public:
 
   /// Publish a message on the topic.
   /**
+   * This signature is enabled if the object being published is
+   * a ROS message type, as opposed to the custom_type of a TypeAdapter, and
+   * that type matches the type given when creating the publisher.
+   *
+   * This signature allows the user to give a reference to a message, which is
+   * copied onto the heap without modification so that a copy can be owned by
+   * rclcpp and ownership of the copy can be moved later if needed.
+   *
+   * \param[in] msg A reference to the message to send.
+   * \param[in] inject_prio The priority to inject into the message for scheduling purposes.
+   */
+  template<typename T>
+  typename std::enable_if_t<
+    rosidl_generator_traits::is_message<T>::value &&
+    std::is_same<T, ROSMessageType>::value
+  >
+  publish(T & msg, uint32_t inject_prio)
+  {
+    rosidl_generator_traits::set_prio(msg, inject_prio);
+    // Avoid allocating when not using intra process.
+    if (!intra_process_is_enabled_) {
+      // In this case we're not using intra process.
+      return this->do_inter_process_publish(msg);
+    }
+    // Otherwise we have to allocate memory in a unique_ptr and pass it along.
+    // As the message is not const, a copy should be made.
+    // A shared_ptr<const MessageT> could also be constructed here.
+    auto unique_msg = this->duplicate_ros_message_as_unique_ptr(msg);
+    this->publish(std::move(unique_msg));
+  }
+
+  /// Publish a message on the topic.
+  /**
    * This signature is enabled if this class was created with a TypeAdapter and
    * the element_type of the std::unique_ptr matches the custom_type for the
    * TypeAdapter used with this class.
@@ -319,8 +384,9 @@ public:
     rclcpp::TypeAdapter<MessageT>::is_specialized::value &&
     std::is_same<T, PublishedType>::value
   >
-  publish(std::unique_ptr<T, PublishedTypeDeleter> msg)
+  publish(std::unique_ptr<T, PublishedTypeDeleter> msg, uint32_t inject_prio = 0)
   {
+    rosidl_generator_traits::set_prio(*msg, inject_prio);
     // Avoid allocating when not using intra process.
     if (!intra_process_is_enabled_) {
       // In this case we're not using intra process.
@@ -379,6 +445,42 @@ public:
     this->publish(std::move(unique_msg));
   }
 
+  /// Publish a message on the topic.
+  /**
+   * This signature is enabled if this class was created with a TypeAdapter and
+   * the given type matches the custom_type of the TypeAdapter.
+   *
+   * This signature allows the user to give a reference to a message, which is
+   * copied onto the heap without modification so that a copy can be owned by
+   * rclcpp and ownership of the copy can be moved later if needed.
+   *
+   * \param[in] msg A reference to the message to send.
+   * \param[in] inject_prio The priority to inject into the message for scheduling purposes.
+   */
+  template<typename T>
+  typename std::enable_if_t<
+    rclcpp::TypeAdapter<MessageT>::is_specialized::value &&
+    std::is_same<T, PublishedType>::value
+  >
+  publish(T & msg, uint32_t inject_prio)
+  {
+    rosidl_generator_traits::set_prio(msg, inject_prio);
+    // Avoid double allocating when not using intra process.
+    if (!intra_process_is_enabled_) {
+      // Convert to the ROS message equivalent and publish it.
+      ROSMessageType ros_msg;
+      rclcpp::TypeAdapter<MessageT>::convert_to_ros_message(msg, ros_msg);
+      // In this case we're not using intra process.
+      return this->do_inter_process_publish(ros_msg);
+    }
+
+    // Otherwise we have to allocate memory in a unique_ptr and pass it along.
+    // As the message is not const, a copy should be made.
+    // A shared_ptr<const MessageT> could also be constructed here.
+    auto unique_msg = this->duplicate_type_adapt_message_as_unique_ptr(msg);
+    this->publish(std::move(unique_msg));
+  }
+
   void
   publish(const rcl_serialized_message_t & serialized_msg)
   {
@@ -400,8 +502,9 @@ public:
    * \param loaned_msg The LoanedMessage instance to be published.
    */
   void
-  publish(rclcpp::LoanedMessage<ROSMessageType, AllocatorT> && loaned_msg)
+  publish(rclcpp::LoanedMessage<ROSMessageType, AllocatorT> && loaned_msg, uint32_t inject_prio = 0)
   {
+    rosidl_generator_traits::set_prio(*loaned_msg, inject_prio);
     if (!loaned_msg.is_valid()) {
       throw std::runtime_error("loaned message is not valid");
     }
