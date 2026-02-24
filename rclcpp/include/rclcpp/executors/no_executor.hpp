@@ -17,10 +17,14 @@
 
 #include <rmw/rmw.h>
 
+#include <atomic>
 #include <cassert>
+#include <cstdint>
 #include <cstdlib>
 #include <memory>
 #include <signal.h>
+#include <string>
+#include <unordered_map>
 #include <vector>
 #include <pthread.h>
 
@@ -78,6 +82,7 @@ struct ThreadDataNoExec {
 struct PosixTimer {
   NoExecutor* executor;
   uint64_t period;
+  std::atomic<int64_t>* period_ptr;  
   rclcpp::TimerBase::SharedPtr timer;
   rclcpp::CallbackGroup::SharedPtr callback_group;
   timer_t timerid;
@@ -137,6 +142,29 @@ public:
   void
   assign_or_create(Executable &executable);
 
+  /**
+   * \param name The name of the timer
+   * \param period_ns The period in nanoseconds
+   */
+  RCLCPP_PUBLIC
+  void
+  set_timer_period(const std::string & name, int64_t period_ns);
+
+  /**
+   * \param name The name of the timer
+   * \return The period in nanoseconds, or 0 if not found
+   */
+  RCLCPP_PUBLIC
+  int64_t
+  get_timer_period(const std::string & name) const;
+
+  /**
+   * \param config Map of timer names to periods in nanoseconds
+   */
+  RCLCPP_PUBLIC
+  void
+  set_timer_period_config(const std::unordered_map<std::string, int64_t> & config);
+
 private:
   void 
   handle_subscription(rclcpp::CallbackGroup::SharedPtr callback_group, const rclcpp::SubscriptionBase::SharedPtr &subscription, size_t num_msgs);
@@ -160,6 +188,11 @@ private:
 
   std::vector<PosixTimer*> timers;
   std::shared_ptr<rclcpp::detail::ChainPriorityAllocator> chain_priority_allocator_;
+  
+  //maps timer name to atomic period (ns)
+  std::unordered_map<std::string, std::atomic<int64_t>> timer_period_config_;
+  // maps timer pointer to its atomic period 
+  std::unordered_map<rclcpp::TimerBase*, std::atomic<int64_t>*> timer_period_map_;
 };
 
 }  // namespace executors

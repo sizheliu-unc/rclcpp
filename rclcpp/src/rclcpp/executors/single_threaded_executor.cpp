@@ -248,26 +248,6 @@ inline rclcpp::sched::SchedAttr* SingleThreadedExecutor::get_sched_attr(const An
   return nullptr;
 }
 
-inline rclcpp::sched::edf_sched_entity* SingleThreadedExecutor::get_sched_entity(const AnyExecutable& any_exec) {
-  if (any_exec.subscription != nullptr) {
-    return &(any_exec.subscription->sched_entity);
-  }
-  if (any_exec.timer != nullptr ) {
-    return &(any_exec.timer->sched_entity);
-  }
-  if (any_exec.service != nullptr) {
-    return &(any_exec.service->sched_entity);
-  }
-  if (any_exec.client != nullptr) {
-    return &(any_exec.client->sched_entity);
-  }
-  if (any_exec.waitable != nullptr) {
-    return &(any_exec.waitable->sched_entity);
-  }
-  // this will never happen.
-  assert(false);
-  return nullptr;
-}
 
 static bool take_message(rclcpp::AnyExecutable& any_exec, std::shared_ptr<void>& message, rclcpp::MessageInfo** message_info_ptr)
 {
@@ -317,8 +297,6 @@ inline void SingleThreadedExecutor::create_idle_thread() {
 }
 
 inline void SingleThreadedExecutor::create_thread(AnyExecutable any_exec, std::shared_ptr<void>& message, rclcpp::MessageInfo* message_info) {
-  // auto attr = get_sched_attr(any_exec);
-  auto sched_entity = get_sched_entity(any_exec);
   auto attr = get_sched_attr(any_exec);
   /* here we use std::thread instead of pthread to make it clean. They involve the same
      underlying syscalls. */
@@ -348,23 +326,7 @@ inline void SingleThreadedExecutor::create_thread(AnyExecutable any_exec, std::s
 
 
 
-    //std::cout << "trying to set new deadline" << std::endl;
-    if (!sched_entity) {
-      //std::cout << "this is not a sched entity" << std::endl;
-    }
-    if (sched_entity->edf_attr) {
-      if (sched_entity->is_source) {
-        //std::cout << "this is a source" << std::endl;
-        struct timespec now;
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        //std::cout << "time in sec: " << now.tv_sec << std::endl;
-        sched_entity->edf_attr->abs_deadline = (uint64_t) now.tv_sec * SEC_IN_NSEC + now.tv_nsec + sched_entity->relative_deadline;
-      }
-      //std::cout << "abs deadline is: " << sched_entity->edf_attr->abs_deadline << std::endl;
-      sched::update_deadline(new_thread.native_handle(), sched_entity->edf_attr);
-    } else {
-      sched::syscall_sched_setattr(sched::get_pid(new_thread.native_handle()), attr);
-    }
+    sched::syscall_sched_setattr(sched::get_pid(new_thread.native_handle()), attr);
     new_thread.detach();
   }
   catch(const std::system_error& e)
@@ -399,7 +361,6 @@ void SingleThreadedExecutor::assign_or_create(AnyExecutable any_exec) {
     create_thread(std::move(any_exec), message, message_info);
     return;
   }
-  auto sched_entity = get_sched_entity(any_exec);
   auto attr = get_sched_attr(any_exec);
 	assert(attr != nullptr);
 		
@@ -409,24 +370,7 @@ void SingleThreadedExecutor::assign_or_create(AnyExecutable any_exec) {
 	idle_thread->message_info = message_info;
 
   idle_thread->sched_attr = attr;
-  int res = 0;
-  //std::cout << "trying to set new deadline" << std::endl;
-  if (!sched_entity) {
-    //std::cout << "this is not a sched entity" << std::endl;
-  }
-  if (sched_entity->edf_attr) {
-    if (sched_entity->is_source) {
-      //std::cout << "this is a source" << std::endl;
-      struct timespec now;
-      clock_gettime(CLOCK_MONOTONIC, &now);
-      //std::cout << "time in sec: " << now.tv_sec << std::endl;
-      sched_entity->edf_attr->abs_deadline = (uint64_t) now.tv_sec * SEC_IN_NSEC + now.tv_nsec + sched_entity->relative_deadline;
-    }
-    //std::cout << "abs deadline is: " << sched_entity->edf_attr->abs_deadline << std::endl;
-    res = (sched::update_deadline(idle_thread->pthread_id, sched_entity->edf_attr) == false);
-  } else {
-    res = sched::syscall_sched_setattr(idle_thread->pid, attr);
-  }
+  int res = sched::syscall_sched_setattr(idle_thread->pid, attr);
   
 	if (res != 0)
 	{

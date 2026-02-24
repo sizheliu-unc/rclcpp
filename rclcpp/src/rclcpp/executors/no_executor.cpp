@@ -63,6 +63,32 @@ NoExecutor::~NoExecutor() {
 }
 
 void
+NoExecutor::set_timer_period(const std::string & name, int64_t period_ns) {
+  auto it = timer_period_config_.find(name);
+  if (it != timer_period_config_.end()) {
+    it->second.store(period_ns);
+  } else {
+    timer_period_config_[name].store(period_ns);
+  }
+}
+
+int64_t
+NoExecutor::get_timer_period(const std::string & name) const {
+  auto it = timer_period_config_.find(name);
+  if (it != timer_period_config_.end()) {
+    return it->second.load();
+  }
+  return 0;  
+}
+
+void
+NoExecutor::set_timer_period_config(const std::unordered_map<std::string, int64_t> & config) {
+  for (const auto & pair : config) {
+    timer_period_config_[pair.first].store(pair.second);
+  }
+}
+
+void
 NoExecutor::start() {
   auto logger = rclcpp::get_logger("NoExecutor");
   RCLCPP_INFO(logger, "Starting NoExecutor with %zu timers", timers.size());
@@ -194,7 +220,22 @@ NoExecutor::add_node(std::shared_ptr<rclcpp::Node> node_ptr, bool notify) {
         client->set_on_new_response_callback(std::bind(&NoExecutor::handle_client, this, callback_group, client, _1));
       },
       [this, &callback_group](const rclcpp::TimerBase::SharedPtr &timer) {
-        this->timers.push_back(new PosixTimer({this, get_period_from_timer(timer), timer, callback_group, 0, this->timers.size()}));
+        //using cb name as key in map
+        std::string timer_name = timer->get_callback_name();
+        
+        int64_t period = 0;
+        auto config_it = timer_period_config_.find(timer_name);
+        if (config_it != timer_period_config_.end()) {
+          period = config_it->second.load();
+        } else {
+          period = get_period_from_timer(timer);
+          timer_period_config_[timer_name].store(period);
+        }
+        
+        std::atomic<int64_t>* period_ptr = &timer_period_config_[timer_name];
+        timer_period_map_[timer.get()] = period_ptr;
+        
+        this->timers.push_back(new PosixTimer({this, static_cast<uint64_t>(period), period_ptr, timer, callback_group, 0, this->timers.size()}));
       },
       [this, &callback_group](const rclcpp::Waitable::SharedPtr &waitable) {
         waitable->set_on_ready_callback(std::bind(&NoExecutor::handle_waitable, this, callback_group, waitable, _1));
@@ -306,6 +347,23 @@ handle_timer(int sig, siginfo_t *si, void *uc) {
     timer_settime(ptimer->timerid, 0, &unset_timer, NULL);
     return;
   }
+  
+  if (ptimer->period_ptr != nullptr) {
+    int64_t new_period = ptimer->period_ptr->load();
+    if (new_period != static_cast<int64_t>(ptimer->period) && new_period > 0) {
+      struct itimerspec its = {};
+      its.it_interval.tv_nsec = new_period % SEC_IN_NSEC;
+      its.it_interval.tv_sec = new_period / SEC_IN_NSEC;
+      its.it_value.tv_nsec = new_period % SEC_IN_NSEC;
+      its.it_value.tv_sec = new_period / SEC_IN_NSEC;
+      
+      int res = timer_settime(ptimer->timerid, 0, &its, NULL);
+      if (res == 0) {
+        ptimer->period = static_cast<uint64_t>(new_period);
+      }
+    }
+  }
+  
   Executable executable;
   executable.type = ExecutableType::TIMER;
   executable.callback_group = ptimer->callback_group;
@@ -347,19 +405,7 @@ NoExecutor::assign_or_create(Executable& executable) {
   }
 	
   idle_thread->executable = std::move(executable);
-  int res = 0;
-  if (sched_base->sched_entity.edf_attr) {
-    if (sched_base->sched_entity.is_source) {
-      struct timespec now;
-      clock_gettime(CLOCK_MONOTONIC, &now);
-      //std::cout << "time in sec: " << now.tv_sec << std::endl;
-      sched_base->sched_entity.edf_attr->abs_deadline = (uint64_t) now.tv_sec * SEC_IN_NSEC + now.tv_nsec + sched_base->sched_entity.relative_deadline;
-    }
-    //std::cout << "abs deadline is: " << sched_entity->edf_attr->abs_deadline << std::endl;
-    res = (sched::update_deadline(idle_thread->pthread_id, sched_base->sched_entity.edf_attr) == false);
-  } else {
-    res = sched::syscall_sched_setattr(idle_thread->pid, &sched_base->sched_attr);
-  }
+  int res = sched::syscall_sched_setattr(idle_thread->pid, &sched_base->sched_attr);
   if (res != 0) {
     // Only warn once about permission issues
     static std::atomic<bool> warned_once{false};
@@ -383,21 +429,9 @@ NoExecutor::create_thread(Executable executable) {
     RCLCPP_ERROR(logger, "sched_base is nullptr in create_thread");
     return;
   }
-  if (sched_base->sched_entity.edf_attr) {
-    if (sched_base->sched_entity.is_source) {
-      struct timespec now;
-      clock_gettime(CLOCK_MONOTONIC, &now);
-      //std::cout << "time in sec: " << now.tv_sec << std::endl;
-      sched_base->sched_entity.edf_attr->abs_deadline = (uint64_t) now.tv_sec * SEC_IN_NSEC + now.tv_nsec + sched_base->sched_entity.relative_deadline;
-    }
-    std::thread new_thread(std::bind(&NoExecutor::thread_start, this, std::move(executable)));
-    sched::update_deadline(new_thread.native_handle(), sched_base->sched_entity.edf_attr);
-    new_thread.detach();
-  } else {
-    std::thread new_thread(std::bind(&NoExecutor::thread_start, this, std::move(executable)));
-    sched::syscall_sched_setattr(sched::get_pid(new_thread.native_handle()), &sched_base->sched_attr);
-    new_thread.detach();
-  }
+  std::thread new_thread(std::bind(&NoExecutor::thread_start, this, std::move(executable)));
+  sched::syscall_sched_setattr(sched::get_pid(new_thread.native_handle()), &sched_base->sched_attr);
+  new_thread.detach();
 }
 
 void
@@ -563,14 +597,10 @@ NoExecutor::apply_chain_priorities()
       continue;
     }
 
-    entity->set_edf_attr(nullptr);
     rclcpp::sched::SchedAttr attr = entity->sched_attr;
     attr.sched_policy = SCHED_FIFO;
     attr.sched_priority = priority;
     attr.sched_flags = 0;
-    attr.sched_runtime = 0;
-    attr.sched_deadline = 0;
-    attr.sched_period = 0;
     entity->set_sched_attr(attr);
   }
   RCLCPP_INFO(logger, "Priority allocation complete");
