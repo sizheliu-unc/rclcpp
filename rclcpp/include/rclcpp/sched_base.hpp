@@ -2,6 +2,7 @@
 #define RCLCPP__SCHED_BASE_HPP_
 #include <sched.h>
 #include <sys/syscall.h>
+#include <unistd.h>
 #include <stdint.h>
 #include <cstring>
 #include <pthread.h>

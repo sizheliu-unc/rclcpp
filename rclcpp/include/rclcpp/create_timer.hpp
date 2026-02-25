@@ -72,6 +72,64 @@ create_timer(
 
 /**
  *
+ * \tparam DurationRepT
+ * \tparam DurationT
+ * \tparam CallbackT
+ * \param period initial period. Must be 0 <= period < nanoseconds::max()
+ * \param callback callback to execute via the timer period
+ * \param group callback group
+ * \param node_base node base interface
+ * \param node_timers node timers interface
+ * \return shared pointer to the created timer
+ * \throws std::invalid argument if either node_base or node_timers
+ * are null, or period is negative or too large
+ */
+template<typename DurationRepT, typename DurationT, typename CallbackT>
+typename rclcpp::WallTimer<CallbackT>::SharedPtr
+create_wall_timer(
+  std::chrono::duration<DurationRepT, DurationT> period,
+  CallbackT callback,
+  rclcpp::CallbackGroup::SharedPtr group,
+  node_interfaces::NodeBaseInterface * node_base,
+  node_interfaces::NodeTimersInterface * node_timers)
+{
+  if (node_base == nullptr) {
+    throw std::invalid_argument{"input node_base cannot be null"};
+  }
+
+  if (node_timers == nullptr) {
+    throw std::invalid_argument{"input node_timers cannot be null"};
+  }
+
+  if (period < std::chrono::duration<DurationRepT, DurationT>::zero()) {
+    throw std::invalid_argument{"timer period cannot be negative"};
+  }
+
+  constexpr auto maximum_safe_cast_ns =
+    std::chrono::nanoseconds::max() - std::chrono::duration<DurationRepT, DurationT>(1);
+
+  constexpr auto ns_max_as_double =
+    std::chrono::duration_cast<std::chrono::duration<double, std::chrono::nanoseconds::period>>(
+    maximum_safe_cast_ns);
+  if (period > ns_max_as_double) {
+    throw std::invalid_argument{
+            "timer period must be less than std::chrono::nanoseconds::max()"};
+  }
+
+  const auto period_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(period);
+  if (period_ns < std::chrono::nanoseconds::zero()) {
+    throw std::runtime_error{
+            "Casting timer period to nanoseconds resulted in integer overflow."};
+  }
+
+  auto timer = rclcpp::WallTimer<CallbackT>::make_shared(
+    std::move(callback), node_base->get_context(), period_ns);
+  node_timers->add_timer(timer, group);
+  return timer;
+}
+
+/**
+ *
  * \tparam CallbackT
  * \param callback callback to execute via the timer period
  * \param group callback group
