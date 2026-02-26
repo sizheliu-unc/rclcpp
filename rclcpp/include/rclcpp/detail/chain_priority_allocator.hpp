@@ -43,6 +43,7 @@ struct ThreadGroupInfo
 struct ChainPriorityAllocation
 {
   std::unordered_map<std::string, std::uint16_t> callback_priorities;
+  std::unordered_map<std::string, std::uint32_t> callback_periods;  // name -> chain period
   std::unordered_map<int, ThreadGroupInfo> threadgroups;
 };
 
@@ -50,7 +51,7 @@ class RCLCPP_PUBLIC ChainPriorityAllocator
 {
 public:
   explicit ChainPriorityAllocator(
-    const std::unordered_map<std::string, userChain> & user_chains);
+    std::shared_ptr<const std::unordered_map<std::string, userChain>> user_chains);
 
   ChainPriorityAllocation allocate(
     const std::unordered_map<std::string, rclcpp::CallbackGroup::SharedPtr> &
@@ -64,6 +65,7 @@ private:
     std::vector<std::uint32_t> deadlines = {};
     std::vector<std::uint32_t> periods = {};
     std::uint32_t min_deadline = UINT32_MAX;
+    std::uint32_t min_deadline_period = 0;  // period of the chain with min_deadline
   };
 
   struct ThreadGroupAdjacencyInfo
@@ -92,7 +94,7 @@ private:
     std::map<std::uint32_t, std::vector<int>> & deadline_to_threadgroup_id_map);
   int generate_threadgroup_id();
 
-  const std::unordered_map<std::string, userChain> & user_chains;
+  std::shared_ptr<const std::unordered_map<std::string, userChain>> user_chains_;
 
   std::unordered_map<std::string, CallbackAdjacencyInfo> adjacency_list_;
   std::unordered_map<int, ThreadGroupAdjacencyInfo> threadgroup_adjacency_list_;
