@@ -319,6 +319,15 @@ public:
       std::make_shared<Clock>(RCL_STEADY_TIME), std::move(callback), context, period)
   {}
 
+  ///overload constructor with period as the first parameter
+  WallTimer(
+    std::chrono::nanoseconds period,
+    FunctorT && callback,
+    rclcpp::Context::SharedPtr context)
+  : GenericTimer<FunctorT>(
+      std::make_shared<Clock>(RCL_STEADY_TIME), std::move(callback), context, period)
+  {}
+
 protected:
   RCLCPP_DISABLE_COPY(WallTimer)
 };

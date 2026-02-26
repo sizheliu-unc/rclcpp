@@ -70,6 +70,45 @@ create_timer(
     period);
 }
 
+/// overload: create_timer with period before callback
+/// \internal
+template<typename CallbackT>
+typename rclcpp::TimerBase::SharedPtr
+create_timer(
+  std::shared_ptr<node_interfaces::NodeBaseInterface> node_base,
+  std::shared_ptr<node_interfaces::NodeTimersInterface> node_timers,
+  rclcpp::Clock::SharedPtr clock,
+  rclcpp::Duration period,
+  CallbackT && callback,
+  rclcpp::CallbackGroup::SharedPtr group = nullptr)
+{
+  return create_timer(
+    node_base,
+    node_timers,
+    clock,
+    std::forward<CallbackT>(callback),
+    group,
+    period);
+}
+
+/// overload: create_timer (node ver) with period before callback
+template<typename NodeT, typename CallbackT>
+typename rclcpp::TimerBase::SharedPtr
+create_timer(
+  NodeT node,
+  rclcpp::Clock::SharedPtr clock,
+  rclcpp::Duration period,
+  CallbackT && callback,
+  rclcpp::CallbackGroup::SharedPtr group = nullptr)
+{
+  return create_timer(
+    node,
+    clock,
+    std::forward<CallbackT>(callback),
+    group,
+    period);
+}
+
 /**
  *
  * \tparam DurationRepT
