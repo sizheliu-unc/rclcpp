@@ -581,41 +581,15 @@ NoExecutor::collect_named_entities()
   return named;
 }
 
-rclcpp::sched::SchedAttr
-NoExecutor::make_fifo_attr(uint32_t priority)
-{
-  rclcpp::sched::SchedAttr attr{};
-  attr.size = sizeof(rclcpp::sched::SchedAttr);
-  attr.sched_policy = SCHED_FIFO;
-  attr.sched_priority = priority;
-  attr.sched_flags = 0;
-  attr.sched_nice = 0;
-  attr.sched_runtime = 0;
-  attr.sched_deadline = 0;
-  attr.sched_period = 0;
-  return attr;
-}
-
-rclcpp::sched::SchedAttr
-NoExecutor::make_other_attr()
-{
-  rclcpp::sched::SchedAttr attr{};
-  attr.size = sizeof(rclcpp::sched::SchedAttr);
-  attr.sched_policy = SCHED_OTHER;
-  attr.sched_priority = 0;
-  attr.sched_nice = 0;
-  attr.sched_flags = 0;
-  attr.sched_runtime = 0;
-  attr.sched_deadline = 0;
-  attr.sched_period = 0;
-  return attr;
-}
-
 void
 NoExecutor::apply_sched_attr_to_entity(
   const std::shared_ptr<rclcpp::sched::SchedBase> & entity,
-  const rclcpp::sched::SchedAttr & attr)
+  uint32_t new_policy,
+  uint32_t new_priority)
 {
+  auto attr = entity->sched_attr;
+  attr.sched_policy = new_policy;
+  attr.sched_priority = new_priority;
   entity->set_sched_attr(attr);
 }
 
@@ -664,11 +638,7 @@ NoExecutor::apply_chain_priorities()
       continue;
     }
 
-    rclcpp::sched::SchedAttr attr = entity->sched_attr;
-    attr.sched_policy = SCHED_FIFO;
-    attr.sched_priority = priority;
-    attr.sched_flags = 0;
-    entity->set_sched_attr(attr);
+    apply_sched_attr_to_entity(entity, SCHED_FIFO, priority);
   }
   RCLCPP_INFO(logger, "Priority allocation complete");
 }
