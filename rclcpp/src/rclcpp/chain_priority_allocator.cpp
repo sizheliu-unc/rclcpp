@@ -14,8 +14,6 @@
 
 #include "rclcpp/detail/chain_priority_allocator.hpp"
 
-#include <algorithm>
-
 #include "rclcpp/logging.hpp"
 
 namespace rclcpp
@@ -31,8 +29,8 @@ rclcpp::Logger get_chain_priority_logger()
 }  // namespace
 
 ChainPriorityAllocator::ChainPriorityAllocator(
-  const std::unordered_map<std::string, userChain> & user_chains)
-: user_chains(user_chains)
+  std::shared_ptr<const std::unordered_map<std::string, userChain>> user_chains)
+: user_chains_(std::move(user_chains))
 {
 }
 
@@ -85,6 +83,11 @@ ChainPriorityAllocation ChainPriorityAllocator::allocate(
       continue;
     }
     allocation.callback_priorities.emplace(pair.first, threadgroup_it->second.fixed_priority);
+
+    const auto adj_it = adjacency_list_.find(pair.first);
+    if (adj_it != adjacency_list_.end()) {
+      allocation.callback_periods.emplace(pair.first, adj_it->second.min_deadline_period);
+    }
   }
 
   return allocation;
@@ -118,7 +121,7 @@ void ChainPriorityAllocator::build_adjacency_list(
       CallbackInfo{pair.first, pair.second, 0});
   }
 
-  for (const auto & chain_pair : user_chains) {
+  for (const auto & chain_pair : *user_chains_) {
     const auto & chain_name = chain_pair.first;
     const auto & chain = chain_pair.second;
     const auto & callbacks = chain.callbacks;
@@ -139,7 +142,10 @@ void ChainPriorityAllocator::build_adjacency_list(
       auto & adj_info = adjacency_list_[callback_name];
       adj_info.deadlines.push_back(chain.deadline);
       adj_info.periods.push_back(chain.period);
-      adj_info.min_deadline = std::min(adj_info.min_deadline, chain.deadline);
+      if (chain.deadline < adj_info.min_deadline) {
+        adj_info.min_deadline = chain.deadline;
+        adj_info.min_deadline_period = chain.period;
+      }
 
       if (has_prev) {
         adjacency_list_[prev_present].outgoing.emplace(callback_name);
