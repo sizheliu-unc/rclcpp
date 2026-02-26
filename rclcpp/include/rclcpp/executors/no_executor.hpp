@@ -167,7 +167,7 @@ public:
   void
   set_timer_period_config(const std::unordered_map<std::string, int64_t> & config);
 protected:
-  void
+  virtual void
   apply_chain_priorities();
 
   /// Container for named callback entities collected from registered nodes.
@@ -182,19 +182,13 @@ protected:
   NamedEntities
   collect_named_entities();
 
-  /// Apply a SchedAttr to a single entity (clears EDF, sets sched_attr).
+  /// Copy entity's existing sched_attr and apply only new_policy and new_priority.
+  /// This preserves all other sched_attr fields (flags, nice, runtime, etc.).
   static void
   apply_sched_attr_to_entity(
     const std::shared_ptr<rclcpp::sched::SchedBase> & entity,
-    const rclcpp::sched::SchedAttr & attr);
-
-  /// Build a SCHED_FIFO attr with given priority.
-  static rclcpp::sched::SchedAttr
-  make_fifo_attr(uint32_t priority);
-
-  /// Build a SCHED_OTHER (best-effort) attr.
-  static rclcpp::sched::SchedAttr
-  make_other_attr();
+    uint32_t new_policy,
+    uint32_t new_priority);
 
   std::shared_ptr<rclcpp::detail::ChainPriorityAllocator> chain_priority_allocator_;
 
