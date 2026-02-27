@@ -384,9 +384,8 @@ public:
     rclcpp::TypeAdapter<MessageT>::is_specialized::value &&
     std::is_same<T, PublishedType>::value
   >
-  publish(std::unique_ptr<T, PublishedTypeDeleter> msg, uint32_t inject_prio = 0)
+  publish(std::unique_ptr<T, PublishedTypeDeleter> msg)
   {
-    rosidl_generator_traits::set_prio(*msg, inject_prio);
     // Avoid allocating when not using intra process.
     if (!intra_process_is_enabled_) {
       // In this case we're not using intra process.
@@ -462,9 +461,8 @@ public:
     rclcpp::TypeAdapter<MessageT>::is_specialized::value &&
     std::is_same<T, PublishedType>::value
   >
-  publish(T & msg, uint32_t inject_prio)
+  publish(T & msg)
   {
-    rosidl_generator_traits::set_prio(msg, inject_prio);
     // Avoid double allocating when not using intra process.
     if (!intra_process_is_enabled_) {
       // Convert to the ROS message equivalent and publish it.
@@ -504,7 +502,7 @@ public:
   void
   publish(rclcpp::LoanedMessage<ROSMessageType, AllocatorT> && loaned_msg, uint32_t inject_prio = 0)
   {
-    rosidl_generator_traits::set_prio(*loaned_msg, inject_prio);
+    rosidl_generator_traits::set_prio(loaned_msg.get(), inject_prio);
     if (!loaned_msg.is_valid()) {
       throw std::runtime_error("loaned message is not valid");
     }
