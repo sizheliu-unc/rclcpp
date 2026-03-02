@@ -616,7 +616,6 @@ NoExecutor::apply_sched_attr_to_entity(
   const std::shared_ptr<rclcpp::sched::SchedBase> & entity,
   const rclcpp::sched::SchedAttr & attr)
 {
-  entity->set_edf_attr(nullptr);
   entity->set_sched_attr(attr);
 }
 

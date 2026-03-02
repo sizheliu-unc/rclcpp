@@ -217,8 +217,7 @@ private:
   thread_start(Executable executable);
 
   std::vector<PosixTimer*> timers;
-  std::shared_ptr<rclcpp::detail::ChainPriorityAllocator> chain_priority_allocator_;
-  
+
   //maps timer name to atomic period (ns)
   std::unordered_map<std::string, std::atomic<int64_t>> timer_period_config_;
   // maps timer pointer to its atomic period 
