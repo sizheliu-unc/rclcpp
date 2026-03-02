@@ -403,6 +403,20 @@ public:
     }
   }
 
+  /// Invalidate the allocation cache when nodes are added/removed so
+  /// apply_chain_priorities() rebuilds it with the updated callback set.
+  void add_node(std::shared_ptr<rclcpp::Node> node_ptr, bool notify = true) override
+  {
+    NoExecutor::add_node(node_ptr, notify);
+    mode_allocation_cache_.clear();
+  }
+
+  void remove_node(std::shared_ptr<rclcpp::Node> node_ptr, bool notify = true) override
+  {
+    NoExecutor::remove_node(node_ptr, notify);
+    mode_allocation_cache_.clear();
+  }
+
   /// Return the currently active mode.
   ModeEnumT get_current_mode() const
   {
