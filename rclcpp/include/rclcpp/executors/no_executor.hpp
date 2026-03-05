@@ -84,7 +84,9 @@ struct ThreadDataNoExec {
 struct PosixTimer {
   NoExecutor* executor;
   uint64_t period;
-  std::atomic<int64_t>* period_ptr;  
+  std::atomic<int64_t>* period_ptr;
+  std::atomic<int64_t>* hold_until_ptr;  
+  std::atomic<int64_t>* delay_next_ptr;   
   rclcpp::TimerBase::SharedPtr timer;
   rclcpp::CallbackGroup::SharedPtr callback_group;
   timer_t timerid;
@@ -166,6 +168,22 @@ public:
   RCLCPP_PUBLIC
   void
   set_timer_period_config(const std::unordered_map<std::string, int64_t> & config);
+
+  /**
+   * \param name The name of the timer
+   * \param hold_until_ns Absolute CLOCK_MONOTONIC ns until which timer is held; 0 = clear
+   */
+  RCLCPP_PUBLIC
+  void
+  set_timer_hold_until(const std::string & name, int64_t hold_until_ns);
+
+  /**
+   * \param name The name of the timer
+   * \param delay_ns Relative ns delay applied to the next fire; 0 = inactive
+   */
+  RCLCPP_PUBLIC
+  void
+  set_timer_delay_next(const std::string & name, int64_t delay_ns);
 protected:
   virtual void
   apply_chain_priorities();
@@ -214,8 +232,13 @@ private:
 
   //maps timer name to atomic period (ns)
   std::unordered_map<std::string, std::atomic<int64_t>> timer_period_config_;
-  // maps timer pointer to its atomic period 
+  // maps timer pointer to its atomic period
   std::unordered_map<rclcpp::TimerBase*, std::atomic<int64_t>*> timer_period_map_;
+
+  // maps timer name to hold_until (absolute CLOCK_MONOTONIC ns; 0 = inactive)
+  std::unordered_map<std::string, std::atomic<int64_t>> timer_hold_until_config_;
+  // maps timer name to delay_next (relative ns; 0 = inactive)
+  std::unordered_map<std::string, std::atomic<int64_t>> timer_delay_next_config_;
 };
 
 }  // namespace executors

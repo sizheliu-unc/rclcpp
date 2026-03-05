@@ -269,12 +269,14 @@ public:
         apply_sched_attr_to_entity(entity, SCHED_OTHER, 0);
 
       } else if (!in_old && in_new) {
-        // (b) WHOLLY NEW: SCHED_OTHER now; SCHED_FIFO + new period at Y_i
+        // (b) WHOLLY NEW: SCHED_OTHER now; timer held until MCR + Y_i (Fig 10: τ₂, τ₃)
         apply_sched_attr_to_entity(entity, SCHED_OTHER, 0);
         if (offset_ns > 0) {
+          int64_t mcr_ns = (int64_t)mcr_time.tv_sec * 1'000'000'000L + mcr_time.tv_nsec;
+          this->set_timer_hold_until(cb_name, mcr_ns + offset_ns);
           RCLCPP_INFO(
-            logger, "  [WHOLLY NEW] '%s' -> SCHED_OTHER now, FIFO(%u) + period %ld ns after %ld ns",
-            cb_name.c_str(), new_prio, new_period_ns, offset_ns);
+            logger, "  [WHOLLY NEW] '%s' -> SCHED_OTHER now, hold until MCR+%ld ns, FIFO(%u) + period %ld ns",
+            cb_name.c_str(), offset_ns, new_prio, new_period_ns);
           deferred.push_back({entity, cb_name, SCHED_FIFO, new_prio, offset_ns, new_period_ns});
         } else {
           RCLCPP_INFO(
@@ -286,11 +288,13 @@ public:
         }
 
       } else if (in_old && in_new && old_prio != new_prio) {
-        // (c) CHANGED: keep old priority during offset, then apply new priority + new period
+        // (c) CHANGED: timer held until MCR + Y_i, then new priority + period (Fig 10: τ₂, τ₃)
         if (offset_ns > 0) {
+          int64_t mcr_ns = (int64_t)mcr_time.tv_sec * 1'000'000'000L + mcr_time.tv_nsec;
+          this->set_timer_hold_until(cb_name, mcr_ns + offset_ns);
           RCLCPP_INFO(
-            logger, "  [CHANGED] '%s' FIFO(%u) -> FIFO(%u) + period %ld ns after %ld ns",
-            cb_name.c_str(), old_prio, new_prio, new_period_ns, offset_ns);
+            logger, "  [CHANGED] '%s' FIFO(%u) -> hold until MCR+%ld ns, then FIFO(%u) + period %ld ns",
+            cb_name.c_str(), old_prio, offset_ns, new_prio, new_period_ns);
           deferred.push_back({entity, cb_name, SCHED_FIFO, new_prio, offset_ns, new_period_ns});
         } else {
           RCLCPP_INFO(
@@ -308,9 +312,10 @@ public:
         if (!period_changed && offset_ns == 0) {
           RCLCPP_DEBUG(logger, "  [UNCHANGED] '%s' FIFO(%u) — no action", cb_name.c_str(), old_prio);
         } else if (period_changed && offset_ns > 0) {
-          // Defer period-only update to Z_i
+          // Timer fires once more, then pauses for Z_i (Fig 10: τ₅)
+          this->set_timer_delay_next(cb_name, offset_ns);
           RCLCPP_INFO(
-            logger, "  [UNCHANGED+Z] '%s' FIFO(%u), period %ld -> %ld ns after %ld ns",
+            logger, "  [UNCHANGED+Z] '%s' FIFO(%u), period %ld -> %ld ns, delay_next %ld ns",
             cb_name.c_str(), old_prio, old_period_ns, new_period_ns, offset_ns);
           deferred.push_back({entity, cb_name, SCHED_FIFO, new_prio, offset_ns, new_period_ns});
         } else if (period_changed) {
@@ -320,8 +325,9 @@ public:
             cb_name.c_str(), old_prio, old_period_ns, new_period_ns);
           this->set_timer_period(cb_name, new_period_ns);
         } else {
-          // Period unchanged, Z_i provided — re-apply same priority at offset
-          RCLCPP_INFO(logger, "  [UNCHANGED+Z] '%s' FIFO(%u) Z offset %ld ns",
+          // Period unchanged, Z_i provided — delay next fire (Fig 10: τ₅)
+          this->set_timer_delay_next(cb_name, offset_ns);
+          RCLCPP_INFO(logger, "  [UNCHANGED+Z] '%s' FIFO(%u) delay_next %ld ns",
             cb_name.c_str(), old_prio, offset_ns);
           deferred.push_back({entity, cb_name, SCHED_FIFO, new_prio, offset_ns, 0});
         }
@@ -375,6 +381,8 @@ public:
             if (upgrade.new_period_ns > 0) {
               this->set_timer_period(upgrade.callback_name, upgrade.new_period_ns);
             }
+            // Clear hold so handle_timer allows the timer to fire again
+            this->set_timer_hold_until(upgrade.callback_name, 0);
           }
 
           RCLCPP_INFO(logger, "Applied %zu upgrades at offset %ld ns", indices.size(), offset_ns);

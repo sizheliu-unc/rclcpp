@@ -89,6 +89,26 @@ NoExecutor::set_timer_period_config(const std::unordered_map<std::string, int64_
 }
 
 void
+NoExecutor::set_timer_hold_until(const std::string & name, int64_t hold_until_ns) {
+  auto it = timer_hold_until_config_.find(name);
+  if (it != timer_hold_until_config_.end()) {
+    it->second.store(hold_until_ns);
+  } else {
+    timer_hold_until_config_[name].store(hold_until_ns);
+  }
+}
+
+void
+NoExecutor::set_timer_delay_next(const std::string & name, int64_t delay_ns) {
+  auto it = timer_delay_next_config_.find(name);
+  if (it != timer_delay_next_config_.end()) {
+    it->second.store(delay_ns);
+  } else {
+    timer_delay_next_config_[name].store(delay_ns);
+  }
+}
+
+void
 NoExecutor::start() {
   auto logger = rclcpp::get_logger("NoExecutor");
   RCLCPP_INFO(logger, "Starting NoExecutor with %zu timers", timers.size());
@@ -234,8 +254,17 @@ NoExecutor::add_node(std::shared_ptr<rclcpp::Node> node_ptr, bool notify) {
         
         std::atomic<int64_t>* period_ptr = &timer_period_config_[timer_name];
         timer_period_map_[timer.get()] = period_ptr;
-        
-        this->timers.push_back(new PosixTimer({this, static_cast<uint64_t>(period), period_ptr, timer, callback_group, 0, this->timers.size()}));
+
+        timer_hold_until_config_[timer_name].store(0);
+        timer_delay_next_config_[timer_name].store(0);
+        std::atomic<int64_t>* hold_until_ptr = &timer_hold_until_config_[timer_name];
+        std::atomic<int64_t>* delay_next_ptr = &timer_delay_next_config_[timer_name];
+
+        this->timers.push_back(new PosixTimer({
+          this, static_cast<uint64_t>(period), period_ptr,
+          hold_until_ptr, delay_next_ptr,
+          timer, callback_group, 0, this->timers.size()
+        }));
       },
       [this, &callback_group](const rclcpp::Waitable::SharedPtr &waitable) {
         waitable->set_on_ready_callback(std::bind(&NoExecutor::handle_waitable, this, callback_group, waitable, _1));
@@ -363,7 +392,36 @@ handle_timer(int sig, siginfo_t *si, void *uc) {
       }
     }
   }
-  
+
+  // B/C: Timer held until transition thread clears the hold
+  if (ptimer->hold_until_ptr != nullptr) {
+    int64_t hold_until = ptimer->hold_until_ptr->load();
+    if (hold_until > 0) {
+      // Reschedule as one-shot at hold_until time; don't execute
+      struct itimerspec its = {};
+      its.it_value.tv_sec  = hold_until / SEC_IN_NSEC;
+      its.it_value.tv_nsec = hold_until % SEC_IN_NSEC;
+      its.it_interval = {0, 0};  // one-shot; transition thread will re-arm
+      timer_settime(ptimer->timerid, TIMER_ABSTIME, &its, NULL);
+      return;
+    }
+  }
+
+  // D: Delay next invocation by a relative offset
+  if (ptimer->delay_next_ptr != nullptr) {
+    int64_t delay = ptimer->delay_next_ptr->load();
+    if (delay > 0) {
+      ptimer->delay_next_ptr->store(0);  // one-shot: consume the delay
+      struct itimerspec its = {};
+      its.it_value.tv_nsec  = delay % SEC_IN_NSEC;
+      its.it_value.tv_sec   = delay / SEC_IN_NSEC;
+      its.it_interval.tv_nsec = ptimer->period % SEC_IN_NSEC;
+      its.it_interval.tv_sec  = ptimer->period / SEC_IN_NSEC;
+      timer_settime(ptimer->timerid, 0, &its, NULL);
+      return;  // don't execute this time
+    }
+  }
+
   Executable executable;
   executable.type = ExecutableType::TIMER;
   executable.callback_group = ptimer->callback_group;
