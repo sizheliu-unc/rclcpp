@@ -393,25 +393,41 @@ handle_timer(int sig, siginfo_t *si, void *uc) {
     }
   }
 
-  // B/C: Timer held until transition thread clears the hold
+  // B/C: Timer held until hold_until time; auto-clear when time is reached
   if (ptimer->hold_until_ptr != nullptr) {
     int64_t hold_until = ptimer->hold_until_ptr->load();
     if (hold_until > 0) {
-      // Reschedule as one-shot at hold_until time; don't execute
+      struct timespec now;
+      clock_gettime(CLOCK_MONOTONIC, &now);
+      int64_t now_ns = (int64_t)now.tv_sec * SEC_IN_NSEC + now.tv_nsec;
+
+      if (now_ns < hold_until) {
+        // Not yet time — reschedule as one-shot at hold_until
+        struct itimerspec its = {};
+        its.it_value.tv_sec  = hold_until / SEC_IN_NSEC;
+        its.it_value.tv_nsec = hold_until % SEC_IN_NSEC;
+        its.it_interval = {0, 0};
+        timer_settime(ptimer->timerid, TIMER_ABSTIME, &its, NULL);
+        return;
+      }
+
+      // Time reached — clear hold and re-arm periodic timer
+      ptimer->hold_until_ptr->store(0);
+      int64_t period = ptimer->period;
       struct itimerspec its = {};
-      its.it_value.tv_sec  = hold_until / SEC_IN_NSEC;
-      its.it_value.tv_nsec = hold_until % SEC_IN_NSEC;
-      its.it_interval = {0, 0};  // one-shot; transition thread will re-arm
-      timer_settime(ptimer->timerid, TIMER_ABSTIME, &its, NULL);
-      return;
+      its.it_value.tv_nsec  = period % SEC_IN_NSEC;
+      its.it_value.tv_sec   = period / SEC_IN_NSEC;
+      its.it_interval.tv_nsec = period % SEC_IN_NSEC;
+      its.it_interval.tv_sec  = period / SEC_IN_NSEC;
+      timer_settime(ptimer->timerid, 0, &its, NULL);
+      // Fall through to execute the callback
     }
   }
 
   // D: Delay next invocation by a relative offset
   if (ptimer->delay_next_ptr != nullptr) {
-    int64_t delay = ptimer->delay_next_ptr->load();
+    int64_t delay = ptimer->delay_next_ptr->exchange(0);
     if (delay > 0) {
-      ptimer->delay_next_ptr->store(0);  // one-shot: consume the delay
       struct itimerspec its = {};
       its.it_value.tv_nsec  = delay % SEC_IN_NSEC;
       its.it_value.tv_sec   = delay / SEC_IN_NSEC;

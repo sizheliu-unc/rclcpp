@@ -10,12 +10,10 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
-#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
-#include <pthread.h>
 #include <sched.h>
 
 #include "rclcpp/chain_yaml_parser.hpp"
@@ -34,11 +32,10 @@ namespace executors
  * Each mode is defined by a YAML file specifying callback chains with deadlines/periods.
  * When a mode change request (MCR) occurs, callbacks are classified as:
  *   - Old-mode completed/aborted: demoted to SCHED_OTHER immediately
- *   - Changed: old priority kept during offset Y_i, then new priority applied
- *   - Wholly new: introduced after offset Y_i
- *   - Unchanged: continue uninterrupted (or with Z_i offset if provided)
+ *   - Changed/wholly new: priority+period applied immediately, timer held until MCR+Y_i
+ *   - Unchanged: continue uninterrupted (or with Z_i delay if provided)
  *
- * A max-priority transition thread handles deferred priority upgrades.
+ * Hold clearing is done by handle_timer auto-clear when time is reached.
  *
  * \tparam StateT   The application state type passed to the mode tester function.
  * \tparam ModeEnumT  An enum (or enum class) identifying each mode.
@@ -114,24 +111,18 @@ public:
     this->chain_priority_allocator_ = mode_allocators_[initial_mode];
   }
 
-  /// Destructor — joins transition thread if running.
-  ~ModeAwareExecutor() override
-  {
-    if (transition_thread_.joinable()) {
-      transition_thread_.join();
-    }
-  }
+  ~ModeAwareExecutor() override = default;
 
   /// Apply a state update and perform a mode change if the new state requires one.
   /**
    * The executor owns state_; state_updater mutates it, then mode_tester_ derives the
    * target mode. Classifies each callback per this protocol:
    *   a) Old-mode completed/aborted → SCHED_OTHER immediately
-   *   b) Wholly new → SCHED_OTHER now, SCHED_FIFO after Y_i offset
-   *   c) Changed → keep old priority, apply new after Y_i offset
-   *   d) Unchanged → no change (or deferred by Z_i if provided)
+   *   b) Wholly new → FIFO + period immediately, timer held until MCR + Y_i
+   *   c) Changed → new FIFO priority + period immediately, timer held until MCR + Y_i
+   *   d) Unchanged → period applied immediately, delay_next if Z_i offset provided
    *
-   * A transition thread at SCHED_FIFO:99 handles all deferred upgrades.
+   * Hold clearing is handled by handle_timer auto-clear when now >= hold_until.
    *
    * \param[in] state_updater  Callable that mutates the executor-owned state object.
    */
@@ -163,10 +154,6 @@ public:
       return;
     }
 
-    // Safe to join here: transition_in_progress_ was false so the thread has finished.
-    if (transition_thread_.joinable()) {
-      transition_thread_.join();
-    }
     ModeEnumT old_mode = current_mode_;
     RCLCPP_INFO(logger, "MCR: mode %d -> %d",
       static_cast<int>(old_mode), static_cast<int>(target_mode));
@@ -210,17 +197,7 @@ public:
     const auto & offsets = (offset_it != mode_offsets_.end())
       ? offset_it->second : empty_offsets;
 
-    // Step 5: Classify each callback and apply immediate changes / build deferred list
-    struct DeferredUpgrade {
-      std::shared_ptr<rclcpp::sched::SchedBase> entity;
-      std::string callback_name;  // for set_timer_period()
-      uint32_t new_policy;
-      uint32_t new_priority;
-      int64_t offset_ns;
-      int64_t new_period_ns;      // 0 = no period update
-    };
-    std::vector<DeferredUpgrade> deferred;
-
+    // Step 5: Classify each callback and apply changes immediately
     for (const auto & [cb_name, entity] : named.entities_by_name) {
       if (!entity) {
         continue;
@@ -269,67 +246,49 @@ public:
         apply_sched_attr_to_entity(entity, SCHED_OTHER, 0);
 
       } else if (!in_old && in_new) {
-        // (b) WHOLLY NEW: SCHED_OTHER now; timer held until MCR + Y_i (Fig 10: τ₂, τ₃)
-        apply_sched_attr_to_entity(entity, SCHED_OTHER, 0);
+        // (b) WHOLLY NEW: apply FIFO + period immediately; timer held until MCR + Y_i
         if (offset_ns > 0) {
           int64_t mcr_ns = (int64_t)mcr_time.tv_sec * 1'000'000'000L + mcr_time.tv_nsec;
           this->set_timer_hold_until(cb_name, mcr_ns + offset_ns);
-          RCLCPP_INFO(
-            logger, "  [WHOLLY NEW] '%s' -> SCHED_OTHER now, hold until MCR+%ld ns, FIFO(%u) + period %ld ns",
-            cb_name.c_str(), offset_ns, new_prio, new_period_ns);
-          deferred.push_back({entity, cb_name, SCHED_FIFO, new_prio, offset_ns, new_period_ns});
-        } else {
-          RCLCPP_INFO(
-            logger, "  [WHOLLY NEW] '%s' -> FIFO(%u) immediately", cb_name.c_str(), new_prio);
-          apply_sched_attr_to_entity(entity, SCHED_FIFO, new_prio);
-          if (new_period_ns > 0) {
-            this->set_timer_period(cb_name, new_period_ns);
-          }
         }
+        apply_sched_attr_to_entity(entity, SCHED_FIFO, new_prio);
+        if (new_period_ns > 0) {
+          this->set_timer_period(cb_name, new_period_ns);
+        }
+        RCLCPP_INFO(logger, "  [WHOLLY NEW] '%s' -> FIFO(%u), period %ld ns%s",
+          cb_name.c_str(), new_prio, new_period_ns,
+          offset_ns > 0 ? ", held until MCR+offset" : "");
 
       } else if (in_old && in_new && old_prio != new_prio) {
-        // (c) CHANGED: timer held until MCR + Y_i, then new priority + period (Fig 10: τ₂, τ₃)
+        // (c) CHANGED: apply new priority + period immediately; timer held until MCR + Y_i
         if (offset_ns > 0) {
           int64_t mcr_ns = (int64_t)mcr_time.tv_sec * 1'000'000'000L + mcr_time.tv_nsec;
           this->set_timer_hold_until(cb_name, mcr_ns + offset_ns);
-          RCLCPP_INFO(
-            logger, "  [CHANGED] '%s' FIFO(%u) -> hold until MCR+%ld ns, then FIFO(%u) + period %ld ns",
-            cb_name.c_str(), old_prio, offset_ns, new_prio, new_period_ns);
-          deferred.push_back({entity, cb_name, SCHED_FIFO, new_prio, offset_ns, new_period_ns});
-        } else {
-          RCLCPP_INFO(
-            logger, "  [CHANGED] '%s' FIFO(%u) -> FIFO(%u) immediately",
-            cb_name.c_str(), old_prio, new_prio);
-          apply_sched_attr_to_entity(entity, SCHED_FIFO, new_prio);
-          if (new_period_ns > 0) {
-            this->set_timer_period(cb_name, new_period_ns);
-          }
         }
+        apply_sched_attr_to_entity(entity, SCHED_FIFO, new_prio);
+        if (new_period_ns > 0) {
+          this->set_timer_period(cb_name, new_period_ns);
+        }
+        RCLCPP_INFO(logger, "  [CHANGED] '%s' FIFO(%u) -> FIFO(%u), period %ld ns%s",
+          cb_name.c_str(), old_prio, new_prio, new_period_ns,
+          offset_ns > 0 ? ", held until MCR+offset" : "");
 
       } else if (in_old && in_new && old_prio == new_prio) {
-        // (d) UNCHANGED priority: check period
+        // (d) UNCHANGED priority: apply period immediately, delay_next if Z_i offset
         bool period_changed = (new_period_ns > 0 && new_period_ns != old_period_ns);
-        if (!period_changed && offset_ns == 0) {
-          RCLCPP_DEBUG(logger, "  [UNCHANGED] '%s' FIFO(%u) — no action", cb_name.c_str(), old_prio);
-        } else if (period_changed && offset_ns > 0) {
-          // Timer fires once more, then pauses for Z_i (Fig 10: τ₅)
+        if (offset_ns > 0) {
           this->set_timer_delay_next(cb_name, offset_ns);
-          RCLCPP_INFO(
-            logger, "  [UNCHANGED+Z] '%s' FIFO(%u), period %ld -> %ld ns, delay_next %ld ns",
-            cb_name.c_str(), old_prio, old_period_ns, new_period_ns, offset_ns);
-          deferred.push_back({entity, cb_name, SCHED_FIFO, new_prio, offset_ns, new_period_ns});
-        } else if (period_changed) {
-          // No Z_i offset — apply period immediately
-          RCLCPP_INFO(
-            logger, "  [UNCHANGED] '%s' FIFO(%u), period %ld -> %ld ns immediately",
-            cb_name.c_str(), old_prio, old_period_ns, new_period_ns);
+        }
+        if (period_changed) {
           this->set_timer_period(cb_name, new_period_ns);
+        }
+        if (!period_changed && offset_ns == 0) {
+          RCLCPP_DEBUG(logger, "  [UNCHANGED] '%s' FIFO(%u) -- no action", cb_name.c_str(), old_prio);
         } else {
-          // Period unchanged, Z_i provided — delay next fire (Fig 10: τ₅)
-          this->set_timer_delay_next(cb_name, offset_ns);
-          RCLCPP_INFO(logger, "  [UNCHANGED+Z] '%s' FIFO(%u) delay_next %ld ns",
-            cb_name.c_str(), old_prio, offset_ns);
-          deferred.push_back({entity, cb_name, SCHED_FIFO, new_prio, offset_ns, 0});
+          RCLCPP_INFO(logger, "  [UNCHANGED] '%s' FIFO(%u), period %ld -> %ld ns%s",
+            cb_name.c_str(), old_prio, old_period_ns,
+            period_changed ? new_period_ns : old_period_ns,
+            offset_ns > 0 ? ", delay_next applied" : "");
         }
       }
       // else: not in either mode's chains — skip
@@ -339,76 +298,9 @@ public:
     current_mode_ = target_mode;
     this->chain_priority_allocator_ = alloc_it->second;
 
-    // Step 7: Spawn transition thread for deferred upgrades (if any)
-    if (!deferred.empty()) {
-      transition_thread_ = std::thread(
-        [this, deferred = std::move(deferred), mcr_time, old_mode, target_mode]()
-      {
-        const auto logger = rclcpp::get_logger("ModeAwareExecutor::Transition");
-        RCLCPP_INFO(logger, "Transition thread started: mode %d -> %d, %zu deferred upgrades",
-          static_cast<int>(old_mode), static_cast<int>(target_mode), deferred.size());
-
-        // Group deferred items by offset value, sorted ascending
-        std::map<int64_t, std::vector<size_t>> offset_groups;
-        for (size_t i = 0; i < deferred.size(); ++i) {
-          offset_groups[deferred[i].offset_ns].push_back(i);
-        }
-
-        for (const auto & [offset_ns, indices] : offset_groups) {
-          // Compute absolute wakeup time = mcr_time + offset_ns
-          struct timespec wake_time = mcr_time;
-          int64_t total_ns = static_cast<int64_t>(wake_time.tv_nsec) + offset_ns;
-          wake_time.tv_sec += total_ns / 1'000'000'000L;
-          wake_time.tv_nsec = static_cast<long>(total_ns % 1'000'000'000L);
-
-          // Sleep until the absolute wakeup time (loop on EINTR)
-          int err;
-          do {
-            err = clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &wake_time, nullptr);
-          } while (err == EINTR);
-
-          if (err != 0) {
-            RCLCPP_ERROR(logger, "clock_nanosleep failed: %s", strerror(err));
-            continue;
-          }
-
-          // Apply deferred priority and period upgrades for this offset group
-          for (size_t idx : indices) {
-            const auto & upgrade = deferred[idx];
-            if (upgrade.entity) {
-              apply_sched_attr_to_entity(upgrade.entity, upgrade.new_policy, upgrade.new_priority);
-            }
-            if (upgrade.new_period_ns > 0) {
-              this->set_timer_period(upgrade.callback_name, upgrade.new_period_ns);
-            }
-            // Clear hold so handle_timer allows the timer to fire again
-            this->set_timer_hold_until(upgrade.callback_name, 0);
-          }
-
-          RCLCPP_INFO(logger, "Applied %zu upgrades at offset %ld ns", indices.size(), offset_ns);
-        }
-
-        RCLCPP_INFO(logger, "Transition complete: mode %d -> %d",
-          static_cast<int>(old_mode), static_cast<int>(target_mode));
-        transition_in_progress_.store(false, std::memory_order_release);
-      });
-
-      // Raise transition thread priority from the parent.
-      rclcpp::sched::SchedAttr rt_attr{};
-      rt_attr.size = sizeof(rclcpp::sched::SchedAttr);
-      rt_attr.sched_policy = SCHED_FIFO;
-      rt_attr.sched_priority = 99;
-      if (rclcpp::sched::syscall_sched_setattr(
-          rclcpp::sched::get_pid(transition_thread_.native_handle()), &rt_attr) != 0)
-      {
-        RCLCPP_WARN(
-          logger,
-          "Failed to set transition thread to SCHED_FIFO:99 (need root/RT privileges)");
-      }
-    } else {
-      RCLCPP_INFO(logger, "No deferred upgrades; mode switch complete immediately");
-      transition_in_progress_.store(false, std::memory_order_release);
-    }
+    RCLCPP_INFO(logger, "Mode switch complete: %d -> %d",
+      static_cast<int>(old_mode), static_cast<int>(target_mode));
+    transition_in_progress_.store(false, std::memory_order_release);
   }
 
   /// Invalidate the allocation cache when nodes are added/removed so
@@ -486,7 +378,6 @@ private:
 
   ModeOffsetMap mode_offsets_;
   std::atomic<bool> transition_in_progress_{false};
-  std::thread transition_thread_;
 };
 
 }  // namespace executors
