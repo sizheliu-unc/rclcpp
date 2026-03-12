@@ -402,25 +402,18 @@ handle_timer(int sig, siginfo_t *si, void *uc) {
       int64_t now_ns = (int64_t)now.tv_sec * SEC_IN_NSEC + now.tv_nsec;
 
       if (now_ns < hold_until) {
-        // Not yet time — reschedule as one-shot at hold_until
+        // Not yet time — reschedule with hold_until as next fire, then resume periodic
         struct itimerspec its = {};
         its.it_value.tv_sec  = hold_until / SEC_IN_NSEC;
         its.it_value.tv_nsec = hold_until % SEC_IN_NSEC;
-        its.it_interval = {0, 0};
+        its.it_interval.tv_nsec = ptimer->period % SEC_IN_NSEC;
+        its.it_interval.tv_sec  = ptimer->period / SEC_IN_NSEC;
         timer_settime(ptimer->timerid, TIMER_ABSTIME, &its, NULL);
         return;
       }
 
-      // Time reached — clear hold and re-arm periodic timer
+      // Time reached — clear hold, fall through to execute the callback
       ptimer->hold_until_ptr->store(0);
-      int64_t period = ptimer->period;
-      struct itimerspec its = {};
-      its.it_value.tv_nsec  = period % SEC_IN_NSEC;
-      its.it_value.tv_sec   = period / SEC_IN_NSEC;
-      its.it_interval.tv_nsec = period % SEC_IN_NSEC;
-      its.it_interval.tv_sec  = period / SEC_IN_NSEC;
-      timer_settime(ptimer->timerid, 0, &its, NULL);
-      // Fall through to execute the callback
     }
   }
 
