@@ -89,6 +89,26 @@ NoExecutor::set_timer_period_config(const std::unordered_map<std::string, int64_
 }
 
 void
+NoExecutor::set_timer_hold_until(const std::string & name, int64_t hold_until_ns) {
+  auto it = timer_hold_until_config_.find(name);
+  if (it != timer_hold_until_config_.end()) {
+    it->second.store(hold_until_ns);
+  } else {
+    timer_hold_until_config_[name].store(hold_until_ns);
+  }
+}
+
+void
+NoExecutor::set_timer_delay_next(const std::string & name, int64_t delay_ns) {
+  auto it = timer_delay_next_config_.find(name);
+  if (it != timer_delay_next_config_.end()) {
+    it->second.store(delay_ns);
+  } else {
+    timer_delay_next_config_[name].store(delay_ns);
+  }
+}
+
+void
 NoExecutor::start() {
   auto logger = rclcpp::get_logger("NoExecutor");
   RCLCPP_INFO(logger, "Starting NoExecutor with %zu timers", timers.size());
@@ -234,8 +254,17 @@ NoExecutor::add_node(std::shared_ptr<rclcpp::Node> node_ptr, bool notify) {
         
         std::atomic<int64_t>* period_ptr = &timer_period_config_[timer_name];
         timer_period_map_[timer.get()] = period_ptr;
-        
-        this->timers.push_back(new PosixTimer({this, static_cast<uint64_t>(period), period_ptr, timer, callback_group, 0, this->timers.size()}));
+
+        timer_hold_until_config_[timer_name].store(0);
+        timer_delay_next_config_[timer_name].store(0);
+        std::atomic<int64_t>* hold_until_ptr = &timer_hold_until_config_[timer_name];
+        std::atomic<int64_t>* delay_next_ptr = &timer_delay_next_config_[timer_name];
+
+        this->timers.push_back(new PosixTimer({
+          this, static_cast<uint64_t>(period), period_ptr,
+          hold_until_ptr, delay_next_ptr,
+          timer, callback_group, 0, this->timers.size()
+        }));
       },
       [this, &callback_group](const rclcpp::Waitable::SharedPtr &waitable) {
         waitable->set_on_ready_callback(std::bind(&NoExecutor::handle_waitable, this, callback_group, waitable, _1));
@@ -363,7 +392,45 @@ handle_timer(int sig, siginfo_t *si, void *uc) {
       }
     }
   }
-  
+
+  // B/C: Timer held until hold_until time; auto-clear when time is reached
+  if (ptimer->hold_until_ptr != nullptr) {
+    int64_t hold_until = ptimer->hold_until_ptr->load();
+    if (hold_until > 0) {
+      struct timespec now;
+      clock_gettime(CLOCK_MONOTONIC, &now);
+      int64_t now_ns = (int64_t)now.tv_sec * SEC_IN_NSEC + now.tv_nsec;
+
+      if (now_ns < hold_until) {
+        // Not yet time — reschedule with hold_until as next fire, then resume periodic
+        struct itimerspec its = {};
+        its.it_value.tv_sec  = hold_until / SEC_IN_NSEC;
+        its.it_value.tv_nsec = hold_until % SEC_IN_NSEC;
+        its.it_interval.tv_nsec = ptimer->period % SEC_IN_NSEC;
+        its.it_interval.tv_sec  = ptimer->period / SEC_IN_NSEC;
+        timer_settime(ptimer->timerid, TIMER_ABSTIME, &its, NULL);
+        return;
+      }
+
+      // Time reached — clear hold, fall through to execute the callback
+      ptimer->hold_until_ptr->store(0);
+    }
+  }
+
+  // D: Delay next invocation by a relative offset
+  if (ptimer->delay_next_ptr != nullptr) {
+    int64_t delay = ptimer->delay_next_ptr->exchange(0);
+    if (delay > 0) {
+      struct itimerspec its = {};
+      its.it_value.tv_nsec  = delay % SEC_IN_NSEC;
+      its.it_value.tv_sec   = delay / SEC_IN_NSEC;
+      its.it_interval.tv_nsec = ptimer->period % SEC_IN_NSEC;
+      its.it_interval.tv_sec  = ptimer->period / SEC_IN_NSEC;
+      timer_settime(ptimer->timerid, 0, &its, NULL);
+      return;  // don't execute this time
+    }
+  }
+
   Executable executable;
   executable.type = ExecutableType::TIMER;
   executable.callback_group = ptimer->callback_group;
@@ -488,19 +555,14 @@ NoExecutor::spin() {
   stop();
 }
 
-void
-NoExecutor::apply_chain_priorities()
+NoExecutor::NamedEntities
+NoExecutor::collect_named_entities()
 {
-  if (!chain_priority_allocator_) {
-    return;
-  }
-
-  std::unordered_map<std::string, rclcpp::CallbackGroup::SharedPtr> groups_by_name;
-  std::unordered_map<std::string, std::shared_ptr<rclcpp::sched::SchedBase>> entities_by_name;
-
+  NamedEntities named;
   const auto logger = rclcpp::get_logger("NoExecutor");
+
   auto register_named_entity =
-    [&groups_by_name, &entities_by_name, logger](
+    [&named, logger](
     const std::string & name,
     const rclcpp::CallbackGroup::SharedPtr & callback_group,
     const std::shared_ptr<rclcpp::sched::SchedBase> & entity)
@@ -512,7 +574,7 @@ NoExecutor::apply_chain_priorities()
         return;
       }
       RCLCPP_INFO(logger, "Registering callback: '%s'", name.c_str());
-      auto [entity_it, inserted] = entities_by_name.emplace(name, entity);
+      auto [entity_it, inserted] = named.entities_by_name.emplace(name, entity);
       if (!inserted) {
         RCLCPP_WARN(
           logger,
@@ -520,7 +582,7 @@ NoExecutor::apply_chain_priorities()
           name.c_str());
         return;
       }
-      groups_by_name.emplace(name, callback_group);
+      named.groups_by_name.emplace(name, callback_group);
     };
 
   {
@@ -578,30 +640,56 @@ NoExecutor::apply_chain_priorities()
     }
   }
 
-  RCLCPP_INFO(logger, "Collected %zu named callbacks", groups_by_name.size());
-  for (const auto & pair : groups_by_name) {
+  RCLCPP_INFO(logger, "Collected %zu named callbacks", named.groups_by_name.size());
+  for (const auto & pair : named.groups_by_name) {
     RCLCPP_INFO(logger, "  - '%s'", pair.first.c_str());
   }
 
-  if (groups_by_name.empty()) {
+  return named;
+}
+
+void
+NoExecutor::apply_sched_attr_to_entity(
+  const std::shared_ptr<rclcpp::sched::SchedBase> & entity,
+  uint32_t new_policy,
+  uint32_t new_priority)
+{
+  auto attr = entity->sched_attr;
+  attr.sched_policy = new_policy;
+  attr.sched_priority = new_priority;
+  entity->set_sched_attr(attr);
+}
+
+void
+NoExecutor::apply_chain_priorities()
+{
+  if (!chain_priority_allocator_) {
+    return;
+  }
+
+  auto named = collect_named_entities();
+
+  const auto logger = rclcpp::get_logger("NoExecutor");
+
+  if (named.groups_by_name.empty()) {
     RCLCPP_WARN(
       logger,
       "Chain priority allocator is set but no named callbacks are registered");
     return;
   }
 
-  auto allocation = chain_priority_allocator_->allocate(groups_by_name);
-  
+  auto allocation = chain_priority_allocator_->allocate(named.groups_by_name);
+
   RCLCPP_INFO(logger, "Chain priority allocation results:");
   for (const auto & pair : allocation.callback_priorities) {
     RCLCPP_INFO(logger, "  '%s' -> priority %d", pair.first.c_str(), pair.second);
   }
-  
+
   for (const auto & pair : allocation.callback_priorities) {
     const auto & callback_name = pair.first;
     const auto priority = pair.second;
-    auto entity_it = entities_by_name.find(callback_name);
-    if (entity_it == entities_by_name.end()) {
+    auto entity_it = named.entities_by_name.find(callback_name);
+    if (entity_it == named.entities_by_name.end()) {
       RCLCPP_WARN(
         logger,
         "No callback entity registered for '%s'; skipping priority assignment",
@@ -617,11 +705,7 @@ NoExecutor::apply_chain_priorities()
       continue;
     }
 
-    rclcpp::sched::SchedAttr attr = entity->sched_attr;
-    attr.sched_policy = SCHED_FIFO;
-    attr.sched_priority = priority;
-    attr.sched_flags = 0;
-    entity->set_sched_attr(attr);
+    apply_sched_attr_to_entity(entity, SCHED_FIFO, priority);
   }
   RCLCPP_INFO(logger, "Priority allocation complete");
 }

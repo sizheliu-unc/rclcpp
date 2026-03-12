@@ -72,4 +72,14 @@ void GenericSubscription::return_serialized_message(
   message.reset();
 }
 
+uint32_t GenericSubscription::get_message_prio(const std::shared_ptr<void> &) {
+  throw rclcpp::exceptions::UnimplementedError(
+          "get_message_prio is not implemented for GenericSubscription");
+}
+
+uint32_t GenericSubscription::get_loaned_message_prio(void *) {
+  throw rclcpp::exceptions::UnimplementedError(
+          "get_loaned_message_prio is not implemented for GenericSubscription");
+}
+
 }  // namespace rclcpp

@@ -84,7 +84,9 @@ struct ThreadDataNoExec {
 struct PosixTimer {
   NoExecutor* executor;
   uint64_t period;
-  std::atomic<int64_t>* period_ptr;  
+  std::atomic<int64_t>* period_ptr;
+  std::atomic<int64_t>* hold_until_ptr;  
+  std::atomic<int64_t>* delay_next_ptr;   
   rclcpp::TimerBase::SharedPtr timer;
   rclcpp::CallbackGroup::SharedPtr callback_group;
   timer_t timerid;
@@ -167,16 +169,57 @@ public:
   void
   set_timer_period_config(const std::unordered_map<std::string, int64_t> & config);
 
+  /**
+   * \param name The name of the timer
+   * \param hold_until_ns Absolute CLOCK_MONOTONIC ns until which timer is held; 0 = clear
+   */
+  RCLCPP_PUBLIC
+  void
+  set_timer_hold_until(const std::string & name, int64_t hold_until_ns);
+
+  /**
+   * \param name The name of the timer
+   * \param delay_ns Relative ns delay applied to the next fire; 0 = inactive
+   */
+  RCLCPP_PUBLIC
+  void
+  set_timer_delay_next(const std::string & name, int64_t delay_ns);
+protected:
+  virtual void
+  apply_chain_priorities();
+
+  /// Container for named callback entities collected from registered nodes.
+  /// groups_by_name is passed to ChainPriorityAllocator::allocate().
+  /// entities_by_name is used to read/write sched_attr on individual callbacks.
+  struct NamedEntities {
+    std::unordered_map<std::string, rclcpp::CallbackGroup::SharedPtr> groups_by_name;
+    std::unordered_map<std::string, std::shared_ptr<rclcpp::sched::SchedBase>> entities_by_name;
+  };
+
+  /// Collect all named callback entities from registered nodes.
+  NamedEntities
+  collect_named_entities();
+
+  /// Copy entity's existing sched_attr and apply only new_policy and new_priority.
+  /// This preserves all other sched_attr fields (flags, nice, runtime, etc.).
+  static void
+  apply_sched_attr_to_entity(
+    const std::shared_ptr<rclcpp::sched::SchedBase> & entity,
+    uint32_t new_policy,
+    uint32_t new_priority);
+
+  std::shared_ptr<rclcpp::detail::ChainPriorityAllocator> chain_priority_allocator_;
+
 private:
-  void 
+  void
   handle_subscription(rclcpp::CallbackGroup::SharedPtr callback_group, const rclcpp::SubscriptionBase::SharedPtr &subscription, size_t num_msgs);
 
   void
   handle_service(rclcpp::CallbackGroup::SharedPtr callback_group, const rclcpp::ServiceBase::SharedPtr &service, size_t num_msgs);
-  
+
   void
-  handle_client(rclcpp::CallbackGroup::SharedPtr callback_group, const rclcpp::ClientBase::SharedPtr &client, size_t num_msgs); 
-  
+  handle_client(rclcpp::CallbackGroup::SharedPtr callback_group, const rclcpp::ClientBase::SharedPtr &client, size_t num_msgs);
+
   void
   handle_waitable(rclcpp::CallbackGroup::SharedPtr callback_group, const rclcpp::Waitable::SharedPtr &waitable, size_t num_msgs);
 
@@ -185,16 +228,17 @@ private:
   void
   thread_start(Executable executable);
 
-  void
-  apply_chain_priorities();
-
   std::vector<PosixTimer*> timers;
-  std::shared_ptr<rclcpp::detail::ChainPriorityAllocator> chain_priority_allocator_;
-  
+
   //maps timer name to atomic period (ns)
   std::unordered_map<std::string, std::atomic<int64_t>> timer_period_config_;
-  // maps timer pointer to its atomic period 
+  // maps timer pointer to its atomic period
   std::unordered_map<rclcpp::TimerBase*, std::atomic<int64_t>*> timer_period_map_;
+
+  // maps timer name to hold_until (absolute CLOCK_MONOTONIC ns; 0 = inactive)
+  std::unordered_map<std::string, std::atomic<int64_t>> timer_hold_until_config_;
+  // maps timer name to delay_next (relative ns; 0 = inactive)
+  std::unordered_map<std::string, std::atomic<int64_t>> timer_delay_next_config_;
 };
 
 }  // namespace executors
